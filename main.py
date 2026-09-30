@@ -1183,7 +1183,7 @@ async def admin_sub_requests(message: Message):
         b.adjust(2)
         await message.answer("💳 Заявка от <code>" + str(driver_id) + "</code>", reply_markup=b.as_markup(), parse_mode="HTML")
 
-@router.message "🎁 Промокоды")
+@router.message(F.text == "🎁 Промокоды")
 async def admin_promos(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
