@@ -1,6 +1,8 @@
 import asyncio
 import math
 import logging
+import os
+from aiohttp import web
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
@@ -442,12 +444,26 @@ async def stats(message: Message):
     )
 
 # ============ ЗАПУСК ============
+async def health(request):
+    return web.Response(text="OK")
+
+async def start_web():
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"✅ Health-сервер запущен на порту {port}")
+
 async def main():
     await init_db()
+    await start_web()  # запускаем веб-сервер для Render
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
-    print("🤖 Бот запущен. Не закрывай это окно!")
+    print("🤖 Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
