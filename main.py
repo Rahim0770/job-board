@@ -16,7 +16,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = 0
+ADMIN_ID = 1120621262
 DB_PATH = "taxi.db"
 SUB_PRICE = 20
 REF_TARGET = 5
