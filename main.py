@@ -22,6 +22,8 @@ SUB_PRICE = 20
 REF_TARGET = 5
 REF_BONUS_DAYS = 3
 AVG_SPEED = 30
+CARD_NUMBER = "013585959"
+CARD_BANK = "Душанбе Сити (DC)"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -53,6 +55,9 @@ class Complaint(StatesGroup):
 
 class AdminReply(StatesGroup):
     waiting = State()
+
+class SubPayment(StatesGroup):
+    receipt = State()
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -303,27 +308,88 @@ async def sub_info(message: Message):
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @router.callback_query(F.data == "sub_pay")
-async def sub_pay(call: CallbackQuery):
+async def sub_pay(call: CallbackQuery, state: FSMContext):
     uid = call.from_user.id
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT id FROM sub_requests WHERE driver_id=? AND status='pending'", (uid,))
         if await cur.fetchone():
-            await call.answer("⏳ Заявка уже отправлена", show_alert=True)
+            await call.answer("⏳ Заявка уже отправлена, ожидайте", show_alert=True)
             return
         await db.execute("INSERT INTO sub_requests(driver_id) VALUES(?)", (uid,))
         await db.commit()
+
+    text = (
+        "💳 <b>Оплата подписки</b>\n\n"
+        f"Сумма: <b>{SUB_PRICE} сомони</b>\n"
+        f"Карта: <code>{CARD_NUMBER}</code>\n"
+        f"Банк: <b>{CARD_BANK}</b>\n\n"
+        "1️⃣ Переведите " + str(SUB_PRICE) + " сомони на карту\n"
+        "2️⃣ Отправьте <b>скриншот чека</b> сюда (как фото)\n\n"
+        "После проверки админ активирует подписку."
+    )
+    await call.message.edit_text(text, parse_mode="HTML")
+
     if ADMIN_ID:
         try:
             uname = "@" + call.from_user.username if call.from_user.username else "—"
             builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Отклонить", callback_data="sub_no:" + str(uid))
+            builder.adjust(1)
+            await call.bot.send_message(
+                ADMIN_ID,
+                "💳 <b>Заявка на подписку</b>\n\n"
+                "👤 " + call.from_user.full_name + "\n"
+                "🔗 " + uname + "\n"
+                "🆔 <code>" + str(uid) + "</code>\n\n"
+                "Ожидает чек об оплате.",
+                reply_markup=builder.as_markup(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+    await state.set_state(SubPayment.receipt)
+    await call.answer()
+
+@router.message(SubPayment.receipt, F.photo)
+async def sub_receipt_photo(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    photo_id = message.photo[-1].file_id
+    await state.clear()
+
+    if ADMIN_ID:
+        try:
+            uname = "@" + message.from_user.username if message.from_user.username else "—"
+            builder = InlineKeyboardBuilder()
             builder.button(text="✅ Подтвердить", callback_data="sub_ok:" + str(uid))
             builder.button(text="❌ Отклонить", callback_data="sub_no:" + str(uid))
             builder.adjust(2)
-            await call.bot.send_message(ADMIN_ID, "💳 <b>Заявка на подписку</b>\n\n👤 " + call.from_user.full_name + "\n🔗 " + uname + "\n🆔 <code>" + str(uid) + "</code>", reply_markup=builder.as_markup(), parse_mode="HTML")
-        except Exception:
-            pass
-    await call.message.edit_text("✅ Заявка отправлена админу. Ожидайте.")
-    await call.answer()
+            await message.bot.send_photo(
+                ADMIN_ID,
+                photo=photo_id,
+                caption="💳 <b>Чек об оплате</b>\n\n"
+                        "👤 " + message.from_user.full_name + "\n"
+                        "🔗 " + uname + "\n"
+                        "🆔 <code>" + str(uid) + "</code>\n"
+                        "💰 " + str(SUB_PRICE) + " сомони",
+                reply_markup=builder.as_markup(),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logging.warning("Не смог отправить чек админу: " + str(e))
+
+    await message.answer(
+        "✅ Чек отправлен админу!\n\nПосле проверки подписка активируется.",
+        reply_markup=driver_menu()
+    )
+
+@router.message(SubPayment.receipt, F.text)
+async def sub_receipt_text(message: Message, state: FSMContext):
+    await message.answer("⚠️ Пожалуйста, отправьте <b>скриншот чека</b> (фото), а не текст.", parse_mode="HTML")
+
+@router.message(SubPayment.receipt)
+async def sub_receipt_wrong(message: Message, state: FSMContext):
+    await message.answer("⚠️ Отправьте скриншот чека (фото).")
 
 @router.callback_query(F.data.startswith("sub_ok:"))
 async def sub_confirm(call: CallbackQuery):
@@ -339,7 +405,13 @@ async def sub_confirm(call: CallbackQuery):
         await call.bot.send_message(uid, "✅ <b>Подписка активирована!</b>\n📅 До: " + until.strftime("%d.%m.%Y %H:%M"), parse_mode="HTML")
     except Exception:
         pass
-    await call.message.edit_text("✅ Подписка выдана: " + str(uid))
+    try:
+        if call.message.photo:
+            await call.message.edit_caption(caption="✅ Подписка выдана: " + str(uid))
+        else:
+            await call.message.edit_text("✅ Подписка выдана: " + str(uid))
+    except Exception:
+        pass
     await call.answer()
 
 @router.callback_query(F.data.startswith("sub_no:"))
@@ -352,10 +424,16 @@ async def sub_reject(call: CallbackQuery):
         await db.execute("UPDATE sub_requests SET status='rejected' WHERE driver_id=? AND status='pending'", (uid,))
         await db.commit()
     try:
-        await call.bot.send_message(uid, "❌ Заявка на подписку отклонена.")
+        await call.bot.send_message(uid, "❌ Заявка на подписку отклонена.\n\nПроверьте чек и попробуйте снова.")
     except Exception:
         pass
-    await call.message.edit_text("❌ Отклонено: " + str(uid))
+    try:
+        if call.message.photo:
+            await call.message.edit_caption(caption="❌ Отклонено: " + str(uid))
+        else:
+            await call.message.edit_text("❌ Отклонено: " + str(uid))
+    except Exception:
+        pass
     await call.answer()
 
 @router.message(F.text == "🎁 Приведи друга")
