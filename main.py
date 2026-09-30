@@ -16,7 +16,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = 1120621262
+ADMIN_ID = 0
 DB_PATH = "taxi.db"
 SUB_PRICE = 20
 REF_TARGET = 5
@@ -796,13 +796,11 @@ async def accept_order(call: CallbackQuery):
     dkb.button(text="Я рядом", callback_data="drv_status:near:" + str(order_id))
     dkb.button(text="Я приехал", callback_data="drv_status:arrived:" + str(order_id))
     dkb.button(text="Чат с клиентом", callback_data="chat_start:" + str(order_id))
-    dkb.button(text="Позвонить", url="tel:" + str(client_phone))
     dkb.button(text="Завершить поездку", callback_data="finish:" + str(order_id))
     dkb.adjust(1)
-    await call.bot.send_message(call.from_user.id, "Управление:", reply_markup=dkb.as_markup())
+    await call.bot.send_message(call.from_user.id, "Управление поездкой:", reply_markup=dkb.as_markup())
     ckb = InlineKeyboardBuilder()
     ckb.button(text="Чат с водителем", callback_data="chat_start:" + str(order_id))
-    ckb.button(text="Позвонить", url="tel:" + str(driver_phone))
     ckb.button(text="Где водитель", callback_data="where_driver:" + str(order_id))
     ckb.adjust(1)
     await call.bot.send_message(client_id, "Водитель принял заказ #" + str(order_id) + "\n\n" + driver_name + "\nТел: " + str(driver_phone) + "\n\n" + car_brand + " (" + car_class + ")\n" + car_plate + "\n\nЦена: " + str(price) + " сомони\nОплата: " + pay_text + "\n\nПодъедет через: " + eta_driver_text + "\nПоездка: " + eta_ride_text)
