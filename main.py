@@ -1181,7 +1181,7 @@ async def admin_sub_requests(message: Message):
         b.button(text="✅ Подтвердить", callback_data="sub_ok:" + str(driver_id))
         b.button(text="❌ Отклонить", callback_data="sub_no:" + str(driver_id))
         b.adjust(2)
-(F        await message.answer("💳 Заявка от <code>" + str(driver_id) + "</code>", reply_markup=b.as_markup(), parse_mode="HTML")
+        await message.answer("💳 Заявка от <code>" + str(driver_id) + "</code>", reply_markup=b.as_markup(), parse_mode="HTML")
 
 @router.message "🎁 Промокоды")
 async def admin_promos(message: Message):
