@@ -16,7 +16,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = 1120621262
+ADMIN_ID = 0
 DB_PATH = "taxi.db"
 SUB_PRICE = 20
 REF_TARGET = 5
@@ -365,7 +365,7 @@ async def role_driver(message: Message):
     await set_role(message.from_user.id, "driver")
     await set_online(message.from_user.id, 0)
     sub_ok = await has_subscription(message.from_user.id)
-    sub_text = "✅ Подписка активна" if sub_ok else f"❌ Подписки нет — оплатите {SUB_PRICE} сомони"
+    sub_text = "✅ Подписка активна" if sub_ok else "❌ Подписки нет — оплатите " + str(SUB_PRICE) + " сомони"
     await message.answer("✅ Вы вошли как <b>водитель</b>.\n\n" + sub_text + "\n\nНажмите «🟢 Я на линии».", reply_markup=driver_menu(), parse_mode="HTML")
 
 @router.message(F.text == "🔄 Сменить роль")
@@ -384,9 +384,9 @@ async def sub_info(message: Message):
         until = datetime.fromisoformat(row[0]).strftime("%d.%m.%Y %H:%M")
         text = "✅ <b>Подписка активна</b>\n📅 До: " + until
     else:
-        text = f"❌ <b>Подписки нет</b>\n\n💰 Стоимость: {SUB_PRICE} сомони/день"
+        text = "❌ <b>Подписки нет</b>\n\n💰 Стоимость: " + str(SUB_PRICE) + " сомони/день"
     builder = InlineKeyboardBuilder()
-    builder.button(text=f"💳 Оплатить {SUB_PRICE} сомони", callback_data="sub_pay")
+    builder.button(text="💳 Оплатить " + str(SUB_PRICE) + " сомони", callback_data="sub_pay")
     builder.adjust(1)
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -400,22 +400,14 @@ async def sub_pay(call: CallbackQuery, state: FSMContext):
             return
         await db.execute("INSERT INTO sub_requests(driver_id) VALUES(?)", (uid,))
         await db.commit()
-    text = (
-        "💳 <b>Оплата подписки</b>\n\n"
-        f"Сумма: <b>{SUB_PRICE} сомони</b>\n"
-        f"Карта: <code>{CARD_NUMBER}</code>\n"
-        f"Банк: <b>{CARD_BANK}</b>\n\n"
-        "1️⃣ Переведите " + str(SUB_PRICE) + " сомони на карту\n"
-        "2️⃣ Отправьте <b>скриншот чека</b> сюда (как фото)"
-    )
+    text = "💳 <b>Оплата подписки</b>\n\nСумма: <b>" + str(SUB_PRICE) + " сомони</b>\nКарта: <code>" + CARD_NUMBER + "</code>\nБанк: <b>" + CARD_BANK + "</b>\n\n1️⃣ Переведите " + str(SUB_PRICE) + " сомони на карту\n2️⃣ Отправьте <b>скриншот чека</b> сюда (как фото)"
     await call.message.edit_text(text, parse_mode="HTML")
     if ADMIN_ID:
         try:
-            uname = "@" + call.from_user.username if call.from_user.username else "—"
             builder = InlineKeyboardBuilder()
             builder.button(text="❌ Отклонить", callback_data="sub_no:" + str(uid))
             builder.adjust(1)
-            await call.bot.send_message(ADMIN_ID, "💳 <b>Заявка на подписку</b>\n\nID: <code>" + str(uid) + "</code>\nОжидает чек.", reply_markup=builder.as_markup(), parse_mode="HTML")
+            await call.bot.send_message(ADMIN_ID, "💳 <b>Заявка на подписку</b>\n\nID: <code>" + str(uid) + "</code>", reply_markup=builder.as_markup(), parse_mode="HTML")
         except Exception:
             pass
     await state.set_state(SubPayment.receipt)
@@ -514,7 +506,7 @@ async def my_car(message: Message, state: FSMContext):
 @router.message(F.text == "🟢 Я на линии")
 async def go_online(message: Message, state: FSMContext):
     if not await has_subscription(message.from_user.id):
-        await message.answer(f"❌ Нет подписки. Стоимость: <b>{SUB_PRICE} сомони/день</b>", parse_mode="HTML")
+        await message.answer("❌ Нет подписки. Стоимость: <b>" + str(SUB_PRICE) + " сомони/день</b>", parse_mode="HTML")
         return
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT car_brand, car_plate, car_class FROM users WHERE user_id=?", (message.from_user.id,))
@@ -994,7 +986,7 @@ async def review_save(message: Message, state: FSMContext):
 @router.message(F.text == "📋 История")
 async def my_orders(message: Message):
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT id, price, status, tariff, created_at FROM orders WHERE client +_id=? ORDER BY " id DESC LIMIT 20 "", (message.from_user.id +,))
+        cur = await db.execute("SELECT id, price, status, tariff FROM orders WHERE client_id=? ORDER BY id DESC LIMIT 20", (message.from_user.id,))
         rows = await cur.fetchall()
     if not rows:
         await message.answer("Заказов нет.")
@@ -1002,7 +994,7 @@ async def my_orders(message: Message):
     emoji = {"pending": "⏳", "accepted": "🚗", "finished": "✅", "cancelled": "❌", "arrived": "📍", "started": "🛣"}
     text = "📋 <b>История поездок</b>\n\n"
     total = 0
-    for oid, price, status, tariff, created in rows:
+    for oid, price, status, tariff in rows:
         text += emoji.get(status, "?") + " #" + str(oid) + " | " + TARIFFS[tariff]["name"] + " | " + str(price) + " сомони\n"
         if status == "finished":
             total += price
@@ -1023,7 +1015,7 @@ async def complaint_send(message: Message, state: FSMContext):
         row = await cur.fetchone()
         role = row[0] if row and row[0] else "?"
         phone = row[1] if row and row[1] else "—"
-        name = ((row[2] or "") (row[3] or "")).strip() if row else "—"
+        name = ((row[2] or "") + " " + (row[3] or "")).strip() if row else "—"
         cur = await db.execute("INSERT INTO complaints(from_id, from_role, text) VALUES(?,?,?)", (uid, role, text))
         cid = cur.lastrowid
         await db.commit()
@@ -1189,9 +1181,9 @@ async def admin_sub_requests(message: Message):
         b.button(text="✅ Подтвердить", callback_data="sub_ok:" + str(driver_id))
         b.button(text="❌ Отклонить", callback_data="sub_no:" + str(driver_id))
         b.adjust(2)
-        await message.answer("💳 Заявка от <code>" + str(driver_id) + "</code>", reply_markup=b.as_markup(), parse_mode="HTML")
+(F        await message.answer("💳 Заявка.text от <code>" + str ==(driver_id) + "</code>", reply_markup=b.as_markup(), parse_mode="HTML")
 
-@router.message(F.text == "🎁 Промокоды")
+@router.message "🎁 Промокоды")
 async def admin_promos(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
