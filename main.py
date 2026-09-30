@@ -2,8 +2,8 @@ import asyncio
 import math
 import logging
 import os
-from aiohttp import web
 import aiosqlite
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -15,16 +15,16 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ============ НАСТРОЙКИ ============
-BOT_TOKEN = "8829372343:AAFoKtMd0UTXLflaJ1isvqhiER4yj2ekwi0"
-ADMIN_ID = 0  # твой Telegram ID (узнать: @userinfobot). 0 = отключено
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+ADMIN_ID = 0
 DB_PATH = "taxi.db"
 
 logging.basicConfig(level=logging.INFO)
 
 TARIFFS = {
-    "economy":  {"name": "🚕 Эконом",  "base": 100, "rate": 30},
-    "comfort":  {"name": "🚙 Комфорт", "base": 150, "rate": 45},
-    "business": {"name": "🚘 Бизнес",  "base": 250, "rate": 70},
+    "economy":  {"name": "🚕 Эконом",  "base": 10, "rate": 3},
+    "comfort":  {"name": "🚙 Комфорт", "base": 15, "rate": 4},
+    "business": {"name": "🚘 Бизнес",  "base": 25, "rate": 7},
 }
 
 router = Router()
@@ -34,10 +34,8 @@ class OrderFlow(StatesGroup):
     from_loc = State()
     to_loc = State()
     tariff = State()
+    payment = State()
     confirm = State()
-
-class Rating(StatesGroup):
-    wait_score = State()
 
 # ============ УТИЛИТЫ ============
 def haversine(lat1, lon1, lat2, lon2):
@@ -47,6 +45,9 @@ def haversine(lat1, lon1, lat2, lon2):
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return 2 * R * math.asin(math.sqrt(a))
+
+def nav_link(flat, flon, tlat, tlon):
+    return f"https://yandex.ru/maps/?rtext={flat},{flon}~{tlat},{tlon}&rtt=auto"
 
 def loc_kb():
     return ReplyKeyboardMarkup(
@@ -90,6 +91,7 @@ async def init_db():
             from_lat REAL, from_lon REAL,
             to_lat REAL, to_lon REAL,
             distance REAL, price INTEGER, tariff TEXT,
+            payment TEXT DEFAULT 'cash',
             status TEXT DEFAULT 'pending',
             rating INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -190,7 +192,7 @@ async def to_loc(message: Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     for key, t in TARIFFS.items():
         price = int(t["base"] + t["rate"] * dist)
-        builder.button(text=f"{t['name']} — {price} ₽", callback_data=f"tariff:{key}")
+        builder.button(text=f"{t['name']} — {price} сомони", callback_data=f"tariff:{key}")
     builder.adjust(1)
 
     await state.set_state(OrderFlow.tariff)
@@ -207,15 +209,41 @@ async def choose_tariff(call: CallbackQuery, state: FSMContext):
     await state.update_data(tariff=key, price=price)
 
     builder = InlineKeyboardBuilder()
+    builder.button(text="💵 Наличные", callback_data="pay:cash")
+    builder.button(text="💳 Картой", callback_data="pay:card")
+    builder.adjust(2)
+
+    await state.set_state(OrderFlow.payment)
+    await call.message.edit_text(
+        f"🚕 Тариф: <b>{TARIFFS[key]['name']}</b>\n"
+        f"📏 Расстояние: ~{data['distance']:.1f} км\n"
+        f"💰 Цена: <b>{price} сомони</b>\n\n"
+        f"Как будете платить?",
+        reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
+    await call.answer()
+
+# ============ ВЫБОР ОПЛАТЫ ============
+@router.callback_query(OrderFlow.payment, F.data.startswith("pay:"))
+async def choose_payment(call: CallbackQuery, state: FSMContext):
+    method = call.data.split(":")[1]
+    await state.update_data(payment=method)
+    data = await state.get_data()
+
+    pay_text = "💵 Наличные" if method == "cash" else "💳 Картой водителю"
+
+    builder = InlineKeyboardBuilder()
     builder.button(text="✅ Подтвердить", callback_data="confirm_order")
     builder.button(text="❌ Отмена", callback_data="cancel_order")
     builder.adjust(2)
 
     await state.set_state(OrderFlow.confirm)
     await call.message.edit_text(
-        f"🚕 Тариф: <b>{TARIFFS[key]['name']}</b>\n"
+        f"🚕 Тариф: <b>{TARIFFS[data['tariff']]['name']}</b>\n"
         f"📏 Расстояние: ~{data['distance']:.1f} км\n"
-        f"💰 Цена: <b>{price} ₽</b>\n\nПодтверждаете заказ?",
+        f"💰 Цена: <b>{data['price']} сомони</b>\n"
+        f"💳 Оплата: <b>{pay_text}</b>\n\n"
+        f"Подтверждаете заказ?",
         reply_markup=builder.as_markup(), parse_mode="HTML"
     )
     await call.answer()
@@ -233,11 +261,11 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """INSERT INTO orders(client_id, from_lat, from_lon, to_lat, to_lon,
-                                  distance, price, tariff)
-               VALUES(?,?,?,?,?,?,?,?)""",
+                                  distance, price, tariff, payment)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
             (call.from_user.id, data["from_lat"], data["from_lon"],
              data["to_lat"], data["to_lon"], data["distance"],
-             data["price"], data["tariff"])
+             data["price"], data["tariff"], data.get("payment", "cash"))
         )
         order_id = cur.lastrowid
         await db.commit()
@@ -246,9 +274,12 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отменить заказ", callback_data=f"client_cancel:{order_id}")
 
+    pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
+
     await call.message.edit_text(
         f"✅ Заказ <b>#{order_id}</b> создан!\n"
-        f"💰 Цена: {data['price']} ₽\n\n"
+        f"💰 Цена: {data['price']} сомони\n"
+        f"💳 Оплата: {pay_text}\n\n"
         f"🔍 Ищем водителя…",
         parse_mode="HTML"
     )
@@ -268,10 +299,13 @@ async def notify_drivers(bot: Bot, order_id: int, data: dict):
     builder = InlineKeyboardBuilder()
     builder.button(text="🚗 Принять заказ", callback_data=f"accept:{order_id}")
 
+    pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
+
     text = (f"🔔 <b>Новый заказ #{order_id}</b>\n"
             f"Тариф: {TARIFFS[data['tariff']]['name']}\n"
+            f"💳 Оплата: <b>{pay_text}</b>\n"
             f"📏 ~{data['distance']:.1f} км\n"
-            f"💰 <b>{data['price']} ₽</b>")
+            f"💰 <b>{data['price']} сомони</b>")
 
     for (uid,) in drivers:
         try:
@@ -286,13 +320,14 @@ async def notify_drivers(bot: Bot, order_id: int, data: dict):
 async def accept_order(call: CallbackQuery):
     order_id = int(call.data.split(":")[1])
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT status, client_id, price, from_lat, from_lon, to_lat, to_lon FROM orders WHERE id=?",
-                               (order_id,))
+        cur = await db.execute(
+            "SELECT status, client_id, price, from_lat, from_lon, to_lat, to_lon, payment, tariff FROM orders WHERE id=?",
+            (order_id,))
         row = await cur.fetchone()
         if not row:
             await call.answer("Заказ не найден", show_alert=True)
             return
-        status, client_id, price, flat, flon, tlat, tlon = row
+        status, client_id, price, flat, flon, tlat, tlon, payment, tariff = row
         if status != "pending":
             await call.answer("⚠️ Заказ уже занят", show_alert=True)
             return
@@ -300,22 +335,44 @@ async def accept_order(call: CallbackQuery):
                          (call.from_user.id, order_id))
         await db.commit()
 
-    await call.message.edit_text(f"✅ Вы приняли заказ <b>#{order_id}</b>. Цена {price} ₽.", parse_mode="HTML")
+    pay_text = "💵 Наличные" if payment == "cash" else "💳 Картой"
 
-    # клиенту — геолокация водителя не нужна, но передадим точки
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Завершить поездку", callback_data=f"finish:{order_id}")
+    await call.message.edit_text(
+        f"✅ Вы приняли заказ <b>#{order_id}</b>.\n"
+        f"💰 Цена: {price} сомони\n"
+        f"💳 Оплата: {pay_text}",
+        parse_mode="HTML"
+    )
 
+    await call.bot.send_location(call.from_user.id, latitude=flat, longitude=flon)
     await call.bot.send_message(
-        client_id,
-        f"🚗 Водитель принял ваш заказ <b>#{order_id}</b>!\n"
-        f"Цена: {price} ₽\n\nОжидайте прибытия.",
+        call.from_user.id,
+        f"📍 <b>Место клиента</b>\n"
+        f"Откройте навигатор по ссылке ниже 👇",
         parse_mode="HTML"
     )
     await call.bot.send_message(
         call.from_user.id,
+        f"🚕 <a href='{nav_link(flat, flon, tlat, tlon)}'>Открыть маршрут в Яндекс.Картах</a>",
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Завершить поездку", callback_data=f"finish:{order_id}")
+    await call.bot.send_message(
+        call.from_user.id,
         "Когда завершите поездку — нажмите кнопку:",
         reply_markup=builder.as_markup()
+    )
+
+    await call.bot.send_message(
+        client_id,
+        f"🚗 Водитель принял ваш заказ <b>#{order_id}</b>!\n"
+        f"💰 Цена: {price} сомони\n"
+        f"💳 Оплата: {pay_text}\n\n"
+        f"Ожидайте прибытия.",
+        parse_mode="HTML"
     )
     await call.answer("Заказ принят")
 
@@ -361,7 +418,6 @@ async def finish_ride(call: CallbackQuery):
 
     await call.message.edit_text("✅ Поездка завершена. Спасибо!")
 
-    # оценка
     builder = InlineKeyboardBuilder()
     for i in range(1, 6):
         builder.button(text="⭐" * i, callback_data=f"rate:{order_id}:{i}")
@@ -417,7 +473,7 @@ async def my_orders(message: Message):
     emoji = {"pending": "⏳", "accepted": "🚗", "finished": "✅", "cancelled": "❌"}
     text = "📋 <b>Последние заказы:</b>\n\n"
     for oid, price, status, tariff in rows:
-        text += f"{emoji.get(status, '?')} #{oid} — {TARIFFS[tariff]['name']} — {price} ₽\n"
+        text += f"{emoji.get(status, '?')} #{oid} — {TARIFFS[tariff]['name']} — {price} сомони\n"
     await message.answer(text, parse_mode="HTML")
 
 # ============ АДМИН ============
@@ -443,7 +499,7 @@ async def stats(message: Message):
         parse_mode="HTML"
     )
 
-# ============ ЗАПУСК ============
+# ============ HEALTH CHECK ДЛЯ RENDER ============
 async def health(request):
     return web.Response(text="OK")
 
@@ -457,9 +513,10 @@ async def start_web():
     await site.start()
     print(f"✅ Health-сервер запущен на порту {port}")
 
+# ============ ЗАПУСК ============
 async def main():
     await init_db()
-    await start_web()  # запускаем веб-сервер для Render
+    await start_web()
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
