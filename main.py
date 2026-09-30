@@ -19,9 +19,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = 1120621262
 DB_PATH = "taxi.db"
-SUB_PRICE = 20  # сомони в день
-REF_TARGET = 5  # сколько друзей привести
-REF_BONUS_DAYS = 3  # сколько дней дать за 5 друзей
+SUB_PRICE = 20
+REF_TARGET = 5
+REF_BONUS_DAYS = 3
+AVG_SPEED = 30  # средняя скорость для расчёта ETA, км/ч
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,6 +37,11 @@ router = Router()
 # ============ СОСТОЯНИЯ ============
 class Reg(StatesGroup):
     phone = State()
+
+class DriverReg(StatesGroup):
+    car_brand = State()
+    car_plate = State()
+    location = State()
 
 class OrderFlow(StatesGroup):
     from_loc = State()
@@ -61,6 +67,12 @@ def haversine(lat1, lon1, lat2, lon2):
 
 def nav_link(flat, flon, tlat, tlon):
     return f"https://yandex.ru/maps/?rtext={flat},{flon}~{tlat},{tlon}&rtt=auto"
+
+def estimate_minutes(km, speed=AVG_SPEED):
+    """Примерное время поездки в минутах."""
+    if not km:
+        return None
+    return max(1, round(km / speed * 60))
 
 def phone_kb():
     return ReplyKeyboardMarkup(
@@ -98,8 +110,9 @@ def driver_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🟢 Я на линии"), KeyboardButton(text="🔴 Уйти с линии")],
-            [KeyboardButton(text="💳 Подписка"), KeyboardButton(text="🎁 Приведи друга")],
-            [KeyboardButton(text="⚠️ Пожаловаться"), KeyboardButton(text="🔄 Сменить роль")],
+            [KeyboardButton(text="💳 Подписка"), KeyboardButton(text="🚗 Моя машина")],
+            [KeyboardButton(text="🎁 Приведи друга"), KeyboardButton(text="⚠️ Пожаловаться")],
+            [KeyboardButton(text="🔄 Сменить роль")],
         ],
         resize_keyboard=True
     )
@@ -131,6 +144,10 @@ async def init_db():
             referred_by INTEGER,
             ref_count INTEGER DEFAULT 0,
             ref_activated INTEGER DEFAULT 0,
+            car_brand TEXT,
+            car_plate TEXT,
+            driver_lat REAL,
+            driver_lon REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS orders(
@@ -161,12 +178,13 @@ async def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        # Миграция для старых баз
+        for col in ["car_brand TEXT", "car_plate TEXT", "driver_lat REAL", "driver_lon REAL"]:
+            try:
+                await db.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            except Exception:
+                pass
         await db.commit()
-
-async def get_user(uid):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT * FROM users WHERE user_id=?", (uid,))
-        return await cur.fetchone()
 
 async def is_registered(uid):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -195,9 +213,8 @@ async def has_subscription(uid):
         if not row or not row[0]:
             return False
         try:
-            until = datetime.fromisoformat(row[0])
-            return until > datetime.now()
-        except:
+            return datetime.fromisoformat(row[0]) > datetime.now()
+        except Exception:
             return False
 
 async def give_subscription(uid, days=1):
@@ -210,7 +227,7 @@ async def give_subscription(uid, days=1):
                 old = datetime.fromisoformat(row[0])
                 if old > base:
                     base = old
-            except:
+            except Exception:
                 pass
         new_until = base + timedelta(days=days)
         await db.execute("UPDATE users SET sub_until=? WHERE user_id=?",
@@ -224,13 +241,12 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
 
-    # Обработка реферальной ссылки
-    args = message.text.split()
+    # Реферальная ссылка
+    args = (message.text or "").split()
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             referrer_id = int(args[1].replace("ref_", ""))
             if referrer_id != uid:
-                # Проверяем, новый ли пользователь
                 async with aiosqlite.connect(DB_PATH) as db:
                     cur = await db.execute("SELECT referred_by FROM users WHERE user_id=?", (uid,))
                     row = await cur.fetchone()
@@ -240,22 +256,20 @@ async def cmd_start(message: Message, state: FSMContext):
                             "ON CONFLICT(user_id) DO UPDATE SET referred_by=excluded.referred_by",
                             (uid, referrer_id)
                         )
-                        # Увеличиваем счётчик реферера
                         await db.execute(
                             "UPDATE users SET ref_count = ref_count + 1 WHERE user_id=?",
                             (referrer_id,)
                         )
                         await db.commit()
-                        # Уведомляем реферера
                         try:
                             await message.bot.send_message(
                                 referrer_id,
-                                f"🎁 По вашей ссылке зарегистрировался новый пользователь!\n"
-                                f"Всего приведено: проверьте в меню «🎁 Приведи друга»"
+                                "🎁 По вашей ссылке зарегистрировался новый пользователь!\n"
+                                "Проверьте в меню «🎁 Приведи друга»."
                             )
-                        except:
+                        except Exception:
                             pass
-        except:
+        except Exception:
             pass
 
     if not await is_registered(uid):
@@ -283,7 +297,6 @@ async def reg_phone(message: Message, state: FSMContext):
 
     await state.clear()
 
-    # Уведомление админу
     if ADMIN_ID:
         try:
             uname = f"@{message.from_user.username}" if message.from_user.username else "—"
@@ -296,7 +309,7 @@ async def reg_phone(message: Message, state: FSMContext):
                 f"🆔 <code>{uid}</code>",
                 parse_mode="HTML"
             )
-        except:
+        except Exception:
             pass
 
     await message.answer(
@@ -325,7 +338,7 @@ async def role_driver(message: Message):
     await set_role(message.from_user.id, "driver")
     await set_online(message.from_user.id, 0)
     sub_ok = await has_subscription(message.from_user.id)
-    sub_text = "✅ Подписка активна" if sub_ok else "❌ Подписки нет — оплатите 20 сомони"
+    sub_text = "✅ Подписка активна" if sub_ok else f"❌ Подписки нет — оплатите {SUB_PRICE} сомони"
     await message.answer(
         f"✅ Вы вошли как <b>водитель</b>.\n\n"
         f"{sub_text}\n\n"
@@ -356,25 +369,22 @@ async def sub_info(message: Message):
     builder = InlineKeyboardBuilder()
     builder.button(text=f"💳 Оплатить {SUB_PRICE} сомони", callback_data="sub_pay")
     builder.adjust(1)
-
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 @router.callback_query(F.data == "sub_pay")
 async def sub_pay(call: CallbackQuery):
     uid = call.from_user.id
-    # Проверяем, нет ли уже активной заявки
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "SELECT id FROM sub_requests WHERE driver_id=? AND status='pending'",
             (uid,)
         )
         if await cur.fetchone():
-            await call.answer("⏳ Заявка уже отправлена, ожидайте подтверждения", show_alert=True)
+            await call.answer("⏳ Заявка уже отправлена", show_alert=True)
             return
         await db.execute("INSERT INTO sub_requests(driver_id) VALUES(?)", (uid,))
         await db.commit()
 
-    # Уведомление админу
     if ADMIN_ID:
         try:
             uname = f"@{call.from_user.username}" if call.from_user.username else "—"
@@ -392,13 +402,10 @@ async def sub_pay(call: CallbackQuery):
                 reply_markup=builder.as_markup(),
                 parse_mode="HTML"
             )
-        except:
+        except Exception:
             pass
 
-    await call.message.edit_text(
-        "✅ Заявка отправлена админу.\n\n"
-        "После подтверждения подписка активируется.",
-    )
+    await call.message.edit_text("✅ Заявка отправлена админу. Ожидайте подтверждения.")
     await call.answer()
 
 @router.callback_query(F.data.startswith("sub_ok:"))
@@ -409,18 +416,19 @@ async def sub_confirm(call: CallbackQuery):
     uid = int(call.data.split(":")[1])
     until = await give_subscription(uid, days=1)
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE sub_requests SET status='approved' WHERE driver_id=? AND status='pending'", (uid,))
+        await db.execute(
+            "UPDATE sub_requests SET status='approved' WHERE driver_id=? AND status='pending'",
+            (uid,)
+        )
         await db.commit()
-
     try:
         await call.bot.send_message(
             uid,
-            f"✅ <b>Подписка активирована!</b>\n📅 До: {until.strftime('%d.%m.%Y %H:%M')}\n\nТеперь можете встать на линию.",
+            f"✅ <b>Подписка активирована!</b>\n📅 До: {until.strftime('%d.%m.%Y %H:%M')}",
             parse_mode="HTML"
         )
-    except:
+    except Exception:
         pass
-
     await call.message.edit_text(f"✅ Подписка выдана пользователю {uid}")
     await call.answer()
 
@@ -431,11 +439,14 @@ async def sub_reject(call: CallbackQuery):
         return
     uid = int(call.data.split(":")[1])
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE sub_requests SET status='rejected' WHERE driver_id=? AND status='pending'", (uid,))
+        await db.execute(
+            "UPDATE sub_requests SET status='rejected' WHERE driver_id=? AND status='pending'",
+            (uid,)
+        )
         await db.commit()
     try:
         await call.bot.send_message(uid, "❌ Заявка на подписку отклонена.")
-    except:
+    except Exception:
         pass
     await call.message.edit_text(f"❌ Отклонено для {uid}")
     await call.answer()
@@ -450,8 +461,6 @@ async def ref_info(message: Message):
 
     count = row[0] if row else 0
     activated = row[1] if row else 0
-
-    # Получить username бота
     bot_info = await message.bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{uid}"
 
@@ -461,15 +470,34 @@ async def ref_info(message: Message):
         f"📊 Ваша статистика:\n"
         f"👥 Приглашено: <b>{count}</b>\n"
         f"✅ Активировано (сделали поездку): <b>{activated}</b>\n\n"
-        f"🔗 Ваша ссылка:\n"
-        f"<code>{ref_link}</code>\n\n"
+        f"🔗 Ваша ссылка:\n<code>{ref_link}</code>\n\n"
         f"Отправьте её друзьям!"
     )
     await message.answer(text, parse_mode="HTML")
 
-# ============ ВОДИТЕЛЬ: ВКЛ/ВЫКЛ ============
+# ============ МОЯ МАШИНА ============
+@router.message(F.text == "🚗 Моя машина")
+async def my_car(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT car_brand, car_plate FROM users WHERE user_id=?", (uid,))
+        row = await cur.fetchone()
+    brand = row[0] if row and row[0] else "не указана"
+    plate = row[1] if row and row[1] else "не указан"
+    await state.set_state(DriverReg.car_brand)
+    await message.answer(
+        f"🚗 <b>Ваша машина</b>\n"
+        f"Марка: <b>{brand}</b>\n"
+        f"Номер: <b>{plate}</b>\n\n"
+        f"Введите новую марку и модель, чтобы изменить.\n"
+        f"Например: <code>Nexia</code>, <code>Cobalt</code>, <code>Gentra</code>",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="HTML"
+    )
+
+# ============ ВОДИТЕЛЬ: ВЫХОД НА ЛИНИЮ ============
 @router.message(F.text == "🟢 Я на линии")
-async def go_online(message: Message):
+async def go_online(message: Message, state: FSMContext):
     if not await has_subscription(message.from_user.id):
         await message.answer(
             f"❌ У вас нет активной подписки.\n\n"
@@ -478,8 +506,78 @@ async def go_online(message: Message):
             parse_mode="HTML"
         )
         return
-    await set_online(message.from_user.id, 1)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT car_brand, car_plate FROM users WHERE user_id=?",
+                              (message.from_user.id,))
+        row = await cur.fetchone()
+
+    if not row or not row[0] or not row[1]:
+        await state.set_state(DriverReg.car_brand)
+        await message.answer(
+            "🚗 <b>Укажите марку и модель автомобиля</b>\n\n"
+            "Например: <code>Nexia</code>, <code>Cobalt</code>, <code>Gentra</code>",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="HTML"
+        )
+        return
+
+    await state.set_state(DriverReg.location)
+    await message.answer(
+        f"✅ Машина: {row[0]}, {row[1]}\n\n"
+        f"📍 Отправьте <b>текущую геолокацию</b> — нужно, чтобы посчитать время до клиента.",
+        reply_markup=loc_kb(),
+        parse_mode="HTML"
+    )
+
+@router.message(DriverReg.car_brand)
+async def drv_brand(message: Message, state: FSMContext):
+    brand = (message.text or "").strip()[:50]
+    if not brand:
+        await message.answer("⚠️ Напишите марку текстом.")
+        return
+    await state.update_data(car_brand=brand)
+    await state.set_state(DriverReg.car_plate)
+    await message.answer(
+        "🔢 <b>Укажите номер автомобиля</b>\n\nНапример: <code>01 TJ 777 AA</code>",
+        parse_mode="HTML"
+    )
+
+@router.message(DriverReg.car_plate)
+async def drv_plate(message: Message, state: FSMContext):
+    plate = (message.text or "").strip()[:20]
+    if not plate:
+        await message.answer("⚠️ Напишите номер текстом.")
+        return
+    data = await state.get_data()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET car_brand=?, car_plate=? WHERE user_id=?",
+            (data["car_brand"], plate, message.from_user.id)
+        )
+        await db.commit()
+    await state.set_state(DriverReg.location)
+    await message.answer(
+        f"✅ Сохранено: {data['car_brand']}, {plate}\n\n"
+        f"📍 Отправьте <b>текущую геолокацию</b> — нужно для расчёта времени до клиента.",
+        reply_markup=loc_kb(),
+        parse_mode="HTML"
+    )
+
+@router.message(DriverReg.location, F.location)
+async def drv_location(message: Message, state: FSMContext):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET driver_lat=?, driver_lon=?, online=1 WHERE user_id=?",
+            (message.location.latitude, message.location.longitude, message.from_user.id)
+        )
+        await db.commit()
+    await state.clear()
     await message.answer("🟢 Вы на линии. Ожидайте заказы.", reply_markup=driver_menu())
+
+@router.message(DriverReg.location)
+async def drv_location_wrong(message: Message):
+    await message.answer("⚠️ Нажмите кнопку «📍 Отправить геолокацию» внизу.")
 
 @router.message(F.text == "🔴 Уйти с линии")
 async def go_offline(message: Message):
@@ -511,6 +609,7 @@ async def to_loc(message: Message, state: FSMContext):
                             to_lon=message.location.longitude,
                             distance=dist)
 
+    eta = estimate_minutes(dist)
     builder = InlineKeyboardBuilder()
     for key, t in TARIFFS.items():
         price = int(t["base"] + t["rate"] * dist)
@@ -519,7 +618,9 @@ async def to_loc(message: Message, state: FSMContext):
 
     await state.set_state(OrderFlow.tariff)
     await message.answer(
-        f"📏 Расстояние: ~{dist:.1f} км\n\nВыберите тариф:",
+        f"📏 Расстояние: ~{dist:.1f} км\n"
+        f"⏳ Поездка займёт: ~{eta} мин\n\n"
+        f"Выберите тариф:",
         reply_markup=builder.as_markup()
     )
 
@@ -527,11 +628,11 @@ async def to_loc(message: Message, state: FSMContext):
 async def choose_tariff(call: CallbackQuery, state: FSMContext):
     key = call.data.split(":")[1]
     data = await state.get_data()
-    price = int(TARIFFS[key]["base"] + TARIFFS[key]["rate"] * data["distance"])
-    await state.update_data(tariff=key, price=price)
+    price = int(TARIFFS[key_m]["base"] + TARIFFS[key]["rate"] *ark data["distance"])
+    await state.update_data(tariffup=key, price=price)
 
-    builder = InlineKeyboardBuilder()
-    builder.button(text="💵 Наличные", callback_data="pay:cash")
+=b    builder = InlineKeyboardBuilder()
+    builderuilder.button(text="💵 Наличные", callback_data=".aspay:cash")
     builder.button(text="💳 Картой", callback_data="pay:card")
     builder.adjust(2)
 
@@ -541,7 +642,7 @@ async def choose_tariff(call: CallbackQuery, state: FSMContext):
         f"📏 Расстояние: ~{data['distance']:.1f} км\n"
         f"💰 Цена: <b>{price} сомони</b>\n\n"
         f"Как будете платить?",
-        reply_markup=builder.as_markup(), parse_mode="HTML"
+        reply_markup(), parse_mode="HTML"
     )
     await call.answer()
 
@@ -595,11 +696,13 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     builder.button(text="❌ Отменить заказ", callback_data=f"client_cancel:{order_id}")
 
     pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
+    eta = estimate_minutes(data["distance"])
 
     await call.message.edit_text(
         f"✅ Заказ <b>#{order_id}</b> создан!\n"
         f"💰 Цена: {data['price']} сомони\n"
-        f"💳 Оплата: {pay_text}\n\n"
+        f"💳 Оплата: {pay_text}\n"
+        f"⏳ Поездка займёт: ~{eta} мин\n\n"
         f"🔍 Ищем водителя…",
         parse_mode="HTML"
     )
@@ -653,7 +756,32 @@ async def accept_order(call: CallbackQuery):
 
     pay_text = "💵 Наличные" if payment == "cash" else "💳 Картой"
 
-    # Проверяем реферал — активируем
+    # Данные о машине водителя
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT car_brand, car_plate, driver_lat, driver_lon FROM users WHERE user_id=?",
+            (call.from_user.id,))
+        drow = await cur.fetchone()
+    car_brand = drow[0] if drow and drow[0] else "не указана"
+    car_plate = drow[1] if drow and drow[1] else "не указан"
+    dlat = drow[2] if drow else None
+    dlon = drow[3] if drow else None
+
+    # Время до клиента и время поездки
+    if dlat and dlon:
+        dist_to_client = haversine(dlat, dlon, flat, flon)
+        eta_driver = estimate_minutes(dist_to_client)
+    else:
+        dist_to_client = None
+        eta_driver = None
+
+    ride_dist = haversine(flat, flon, tlat, tlon)
+    eta_ride = estimate_minutes(ride_dist)
+
+    eta_driver_text = f"~{eta_driver} мин" if eta_driver else "неизвестно"
+    eta_ride_text = f"~{eta_ride} мин" if eta_ride else "неизвестно"
+
+    # Реферальная активация
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT referred_by, ref_activated FROM users WHERE user_id=?",
                               (call.from_user.id,))
@@ -661,16 +789,11 @@ async def accept_order(call: CallbackQuery):
         if ref_row and ref_row[0] and not ref_row[1]:
             referrer_id = ref_row[0]
             await db.execute("UPDATE users SET ref_activated=1 WHERE user_id=?", (call.from_user.id,))
-            await db.execute("UPDATE users SET ref_count = ref_count WHERE user_id=?", (referrer_id,))
-            # Проверяем, набрал ли реферер 5 активированных
             cur = await db.execute(
                 "SELECT COUNT(*) FROM users WHERE referred_by=? AND ref_activated=1",
                 (referrer_id,)
             )
             cnt = (await cur.fetchone())[0]
-            # Если достиг REF_TARGET и ещё не получал бонус
-            cur = await db.execute("SELECT ref_count FROM users WHERE user_id=?", (referrer_id,))
-            # дадим бонус только один раз за каждые REF_TARGET
             if cnt >= REF_TARGET and cnt % REF_TARGET == 0:
                 await give_subscription(referrer_id, days=REF_BONUS_DAYS)
                 try:
@@ -681,21 +804,24 @@ async def accept_order(call: CallbackQuery):
                         f"🎁 +{REF_BONUS_DAYS} дня подписки бесплатно!",
                         parse_mode="HTML"
                     )
-                except:
+                except Exception:
                     pass
             await db.commit()
 
+    # Водителю
     await call.message.edit_text(
         f"✅ Вы приняли заказ <b>#{order_id}</b>.\n"
         f"💰 Цена: {price} сомони\n"
-        f"💳 Оплата: {pay_text}",
+        f"💳 Оплата: {pay_text}\n\n"
+        f"⏱️ До клиента: <b>{eta_driver_text}</b>\n"
+        f"⏳ Поездка займёт: <b>{eta_ride_text}</b>",
         parse_mode="HTML"
     )
 
     await call.bot.send_location(call.from_user.id, latitude=flat, longitude=flon)
     await call.bot.send_message(
         call.from_user.id,
-        f"📍 <b>Место клиента</b>\nОткройте навигатор по ссылке ниже 👇",
+        "📍 <b>Место клиента</b>\nОткройте навигатор по ссылке ниже 👇",
         parse_mode="HTML"
     )
     await call.bot.send_message(
@@ -712,11 +838,16 @@ async def accept_order(call: CallbackQuery):
         reply_markup=builder.as_markup()
     )
 
+    # Клиенту — с данными о машине и временем
     await call.bot.send_message(
         client_id,
-        f"🚗 Водитель принял ваш заказ <b>#{order_id}</b>!\n"
+        f"🚗 <b>Водитель принял ваш заказ #{order_id}!</b>\n\n"
+        f"🚙 Машина: <b>{car_brand}</b>\n"
+        f"🔢 Номер: <b>{car_plate}</b>\n\n"
         f"💰 Цена: {price} сомони\n"
-        f"💳 Оплата: {pay_text}\n\nОжидайте прибытия.",
+        f"💳 Оплата: {pay_text}\n\n"
+        f"⏱️ Подъедет через: <b>{eta_driver_text}</b>\n"
+        f"⏳ Поездка займёт: <b>{eta_ride_text}</b>",
         parse_mode="HTML"
     )
     await call.answer("Заказ принят")
@@ -739,7 +870,7 @@ async def client_cancel(call: CallbackQuery):
     if driver_id:
         try:
             await call.bot.send_message(driver_id, f"⚠️ Клиент отменил заказ #{order_id}.")
-        except:
+        except Exception:
             pass
     await call.answer()
 
@@ -796,7 +927,7 @@ async def rate_driver(call: CallbackQuery):
     await call.message.edit_text(f"Спасибо за оценку: {'⭐' * score}")
     try:
         await call.bot.send_message(driver_id, f"⭐ Вам поставили {score}/5 за заказ #{order_id}.")
-    except:
+    except Exception:
         pass
     await call.answer()
 
@@ -833,8 +964,6 @@ async def complaint_start(message: Message, state: FSMContext):
 async def complaint_send(message: Message, state: FSMContext):
     uid = message.from_user.id
     text = message.text
-
-    # Роль
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT role, phone FROM users WHERE user_id=?", (uid,))
         row = await cur.fetchone()
@@ -847,7 +976,6 @@ async def complaint_send(message: Message, state: FSMContext):
 
     await state.clear()
 
-    # Отправка админу
     if ADMIN_ID:
         try:
             builder = InlineKeyboardBuilder()
@@ -913,8 +1041,8 @@ async def admin_reply_send(message: Message, state: FSMContext):
             f"✉️ <b>Ответ на вашу жалобу #{complaint_id}</b>\n\n{message.text}",
             parse_mode="HTML"
         )
-        await message.answer(f"✅ Ответ отправлен пользователю.")
-    except:
+        await message.answer("✅ Ответ отправлен пользователю.")
+    except Exception:
         await message.answer("⚠️ Не смог отправить (пользователь заблокировал бота)")
 
     await state.clear()
@@ -954,9 +1082,9 @@ async def admin_stats(message: Message):
 
     await message.answer(
         f"📊 <b>Статистика</b>\n\n"
-        f"👤 Клиентов: <b>{clients}</b>\n"
-        f"🚗 Водителей: <b>{drivers}</b>\n"
-        f"📦 Заказов: <b>{total_orders}</b>\n"
+        f"👤 Клиентов: <b>{clients}</ usersb>\n"
+        f"🚗 WHERE Водителей: <b>{dr roleivers}</b>\n"
+       =' f"📦 Заказов: <driverb>{total_orders}</b>\n"
         f"✅ Завершено: <b>{finished}</b>\n"
         f"❌ Отменено: <b>{cancelled}</b>\n"
         f"💰 Общий оборот: <b>{revenue} сомони</b>\n"
@@ -971,24 +1099,26 @@ async def admin_drivers(message: Message):
         return
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            "SELECT user_id, phone, online, rating, rides, sub_until, ref_count FROM users "
-            "WHERE role='driver' ORDER BY rides DESC LIMIT 20"
+            "SELECT user_id, phone, online, rating, rides, sub_until, ref_count, car_brand, car_plate "
+            "FROM' ORDER BY rides DESC LIMIT 20"
         )
         rows = await cur.fetchall()
     if not rows:
         await message.answer("Водителей пока нет.")
         return
     text = "🚗 <b>Водители</b>\n\n"
-    for uid, phone, online, rating, rides, sub_until, refs in rows:
+    for uid, phone, online, rating, rides, sub_until, refs, brand, plate in rows:
         sub_text = "❌"
         if sub_until:
             try:
                 if datetime.fromisoformat(sub_until) > datetime.now():
                     sub_text = "✅"
-            except:
+            except Exception:
                 pass
         on_text = "🟢" if online else "⚪"
+        car = f"{brand or '—'} / {plate or '—'}"
         text += (f"{on_text} <code>{uid}</code> | {phone}\n"
+                 f"   🚙 {car}\n"
                  f"   ⭐ {rating:.1f} | 🚕 {rides} | {sub_text}подписка | 🎁 {refs}\n\n")
     await message.answer(text, parse_mode="HTML")
 
