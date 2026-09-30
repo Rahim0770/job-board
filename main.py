@@ -15,7 +15,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ============ НАСТРОЙКИ ============
-BOT_TOKEN = "8829372343:AAH-EiePnDeLdk6eUZu8oMxhx6PErJpRBMc"
+BOT_TOKEN = "8829372343:AAFoKtMd0UTXLflaJ1isvqhiER4yj2ekwi0"
 ADMIN_ID = 0  # твой Telegram ID (узнать: @userinfobot). 0 = отключено
 DB_PATH = "taxi.db"
 
