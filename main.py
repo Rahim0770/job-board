@@ -24,8 +24,14 @@ SUB_PRICE = 20
 REF_TARGET = 5
 REF_BONUS_DAYS = 3
 AVG_SPEED = 30
+NEAR_RADIUS = 2.0
+
 CARD_NUMBER = "013585959"
-CARD_BANK = "Душанбе Сити (DC)"
+BANKS_TEXT = ("Реквизиты:\n"
+              "1. DC-банк        013585959\n"
+              "2. ESKHATA-банк   013585959\n"
+              "3. ALIF-банк      013585959\n"
+              "4. SPITAMEN-банк  013585959")
 
 BTN_CLIENT = "Я клиент"
 BTN_DRIVER = "Я водитель"
@@ -54,6 +60,9 @@ BTN_BROADCAST = "Рассылка"
 BTN_COMMISSIONS = "Комиссии"
 BTN_FORECAST = "Прогноз"
 BTN_EXPORT = "Экспорт CSV"
+BTN_ADDR = "Мои адреса"
+BTN_REPEAT = "Повторить заказ"
+BTN_GRAPH = "График заработка"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -86,6 +95,8 @@ class OrderFlow(StatesGroup):
     tariff = State()
     payment = State()
     promo = State()
+    when = State()
+    when_custom = State()
     confirm = State()
 
 class Complaint(StatesGroup):
@@ -109,6 +120,9 @@ class Review(StatesGroup):
 
 class Broadcast(StatesGroup):
     text = State()
+
+class AddrSave(StatesGroup):
+    title = State()
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -154,6 +168,19 @@ def class_kb():
         resize_keyboard=True, one_time_keyboard=True
     )
 
+def when_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Сейчас")],
+            [KeyboardButton(text="Через 30 мин")],
+            [KeyboardButton(text="Через 1 час")],
+            [KeyboardButton(text="Через 2 часа")],
+            [KeyboardButton(text="Через 4 часа")],
+            [KeyboardButton(text="Своё время")],
+        ],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+
 def chat_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -177,6 +204,7 @@ def client_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_ORDER)],
+            [KeyboardButton(text=BTN_REPEAT), KeyboardButton(text=BTN_ADDR)],
             [KeyboardButton(text=BTN_HISTORY), KeyboardButton(text=BTN_REF)],
             [KeyboardButton(text=BTN_COMPLAINT), KeyboardButton(text=BTN_CHANGE)],
         ],
@@ -189,6 +217,7 @@ def driver_menu():
             [KeyboardButton(text=BTN_ONLINE), KeyboardButton(text=BTN_OFFLINE)],
             [KeyboardButton(text=BTN_SUB), KeyboardButton(text=BTN_CAR)],
             [KeyboardButton(text=BTN_EARN), KeyboardButton(text=BTN_MYSTATS)],
+            [KeyboardButton(text=BTN_GRAPH), KeyboardButton(text=BTN_TOP)],
             [KeyboardButton(text=BTN_REF), KeyboardButton(text=BTN_COMPLAINT)],
             [KeyboardButton(text=BTN_CHANGE)],
         ],
@@ -198,7 +227,7 @@ def driver_menu():
 def admin_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_STATS)],
+            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_GRAPH)],
             [KeyboardButton(text=BTN_DRIVERS), KeyboardButton(text=BTN_CLIENTS)],
             [KeyboardButton(text=BTN_ORDERS), KeyboardButton(text=BTN_COMPLAINTS)],
             [KeyboardButton(text=BTN_SUBREQ), KeyboardButton(text=BTN_PROMO)],
@@ -237,6 +266,7 @@ async def init_db():
             distance REAL, price INTEGER, tariff TEXT,
             payment TEXT DEFAULT 'cash',
             promo TEXT DEFAULT '', discount INTEGER DEFAULT 0,
+            scheduled_at TIMESTAMP,
             status TEXT DEFAULT 'pending',
             rating INTEGER DEFAULT 0,
             review TEXT DEFAULT '',
@@ -260,13 +290,19 @@ async def init_db():
             active INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS addresses(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER, title TEXT,
+            lat REAL, lon REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         for col in ["first_name TEXT", "last_name TEXT", "car_class TEXT", "car_photo TEXT", "self_photo TEXT", "total_rides INTEGER DEFAULT 0", "approved INTEGER DEFAULT 0", "rejected INTEGER DEFAULT 0"]:
             try:
                 await db.execute("ALTER TABLE users ADD COLUMN " + col)
             except Exception:
                 pass
-        for col in ["promo TEXT DEFAULT ''", "discount INTEGER DEFAULT 0", "review TEXT DEFAULT ''"]:
+        for col in ["promo TEXT DEFAULT ''", "discount INTEGER DEFAULT 0", "review TEXT DEFAULT ''", "scheduled_at TIMESTAMP"]:
             try:
                 await db.execute("ALTER TABLE orders ADD COLUMN " + col)
             except Exception:
@@ -456,7 +492,7 @@ async def sub_pay(call: CallbackQuery, state: FSMContext):
             return
         await db.execute("INSERT INTO sub_requests(driver_id) VALUES(?)", (uid,))
         await db.commit()
-    text = "Оплата подписки\n\nСумма: " + str(SUB_PRICE) + " сомони\nКарта: " + CARD_NUMBER + "\nБанк: " + CARD_BANK + "\n\n1. Переведите " + str(SUB_PRICE) + " сомони на карту\n2. Отправьте скриншот чека сюда (как фото)"
+    text = "Оплата подписки\n\nСумма: " + str(SUB_PRICE) + " сомони\n\n" + BANKS_TEXT + "\n\n1. Переведите " + str(SUB_PRICE) + " сомони на любую карту\n2. Отправьте скриншот чека сюда (как фото)"
     await call.message.edit_text(text)
     if ADMIN_ID:
         try:
@@ -544,7 +580,7 @@ async def driver_approve(call: CallbackQuery):
         await db.execute("UPDATE users SET approved=1, rejected=0 WHERE user_id=?", (uid,))
         await db.commit()
     try:
-        await call.bot.send_message(uid, "Вас приняли на работу!\n\nТеперь вы можете работать:\n1. Оформите подписку (20 сомони/день)\n2. Нажмите Я на линии\n\nУдачи!")
+        await call.bot.send_message(uid, "Вас приняли на работу!\n\nТеперь вы можете работать:\n1. Оформите подписку (" + str(SUB_PRICE) + " сомони/день)\n2. Нажмите Я на линии\n\nУдачи!")
     except Exception:
         pass
     try:
@@ -566,7 +602,7 @@ async def driver_reject(call: CallbackQuery):
         await db.execute("UPDATE users SET approved=0, rejected=1 WHERE user_id=?", (uid,))
         await db.commit()
     try:
-        await call.bot.send_message(uid, "Заявка отклонена.\n\nАдмин не принял вас на работу.\nСвяжитесь с администратором.")
+        await call.bot.send_message(uid, "Заявка отклонена.\n\nАдмин не принял вас на работу.")
     except Exception:
         pass
     try:
@@ -625,6 +661,57 @@ async def my_earn(message: Message):
     text += "Всего: " + str(row4[0]) + " поездок, " + str(row4[1]) + " сомони"
     await message.answer(text)
 
+@router.message(F.text == BTN_GRAPH)
+async def graph_earn(message: Message):
+    is_admin = (message.from_user.id == ADMIN_ID)
+    uid = message.from_user.id
+    if is_admin:
+        async with aiosqlite.connect(DB_PATH) as db:
+            today = datetime.now().strftime("%Y-%m-%d")
+            week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            year_ago = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+            cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND DATE(created_at)=?", (today,))
+            d1 = await cur.fetchone()
+            cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND DATE(created_at)>=?", (week_ago,))
+            d7 = await cur.fetchone()
+            cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND DATE(created_at)>=?", (month_ago,))
+            d30 = await cur.fetchone()
+            cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND DATE(created_at)>=?", (year_ago,))
+            d365 = await cur.fetchone()
+            cur = await db.execute("SELECT COUNT(*) FROM sub_requests WHERE status='approved'")
+            subs = (await cur.fetchone())[0]
+            sub_money = subs * SUB_PRICE
+        text = "График заработка (админ)\n\n"
+        text += "Сегодня: " + str(d1[0]) + " заказов, " + str(d1[1]) + " сомони\n"
+        text += "7 дней: " + str(d7[0]) + " заказов, " + str(d7[1]) + " сомони\n"
+        text += "30 дней: " + str(d30[0]) + " заказов, " + str(d30[1]) + " сомони\n"
+        text += "365 дней: " + str(d365[0]) + " заказов, " + str(d365[1]) + " сомони\n\n"
+        text += "Подписок подтверждено: " + str(subs) + "\n"
+        text += "Заработок с подписок: " + str(sub_money) + " сомони\n\n"
+        text += "Ваша комиссия 10%:\n"
+        text += "Сегодня: " + str(int(d1[1] * 0.1)) + " сомони\n"
+        text += "7 дней: " + str(int(d7[1] * 0.1)) + " сомони\n"
+        text += "30 дней: " + str(int(d30[1] * 0.1)) + " сомони\n\n"
+        text += "Итого комиссия + подписки (30 дней): " + str(int(d30[1] * 0.1) + sub_money) + " сомони"
+        await message.answer(text)
+        return
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE driver_id=? AND status='finished' AND DATE(created_at)=?", (uid, today))
+        row1 = await cur.fetchone()
+        cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE driver_id=? AND status='finished' AND DATE(created_at)>=?", (uid, week_ago))
+        row2 = await cur.fetchone()
+        cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE driver_id=? AND status='finished' AND DATE(created_at)>=?", (uid, month_ago))
+        row3 = await cur.fetchone()
+    text = "Мой график\n\n"
+    text += "Сегодня: " + str(row1[0]) + " поездок, " + str(row1[1]) + " сомони\n"
+    text += "7 дней: " + str(row2[0]) + " поездок, " + str(row2[1]) + " сомони\n"
+    text += "30 дней: " + str(row3[0]) + " поездок, " + str(row3[1]) + " сомони\n"
+    await message.answer(text)
+
 @router.message(F.text == BTN_MYSTATS)
 async def my_stats(message: Message):
     uid = message.from_user.id
@@ -667,6 +754,83 @@ async def top_drivers(message: Message):
         i += 1
     await message.answer(text)
 
+@router.message(F.text == BTN_ADDR)
+async def my_addr(message: Message):
+    uid = message.from_user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id, title, lat, lon FROM addresses WHERE user_id=? ORDER BY id DESC LIMIT 10", (uid,))
+        rows = await cur.fetchall()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Добавить адрес", callback_data="addr_add")
+    builder.adjust(1)
+    if not rows:
+        await message.answer("У вас пока нет сохранённых адресов.", reply_markup=builder.as_markup())
+        return
+    text = "Мои адреса\n\n"
+    for aid, title, lat, lon in rows:
+        text += "#" + str(aid) + " " + title + "\n"
+    await message.answer(text, reply_markup=builder.as_markup())
+
+@router.callback_query(F.data == "addr_add")
+async def addr_add(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AddrSave.title)
+    await call.message.answer("Напишите название адреса (например Дом, Работа):")
+    await call.answer()
+
+@router.message(AddrSave.title)
+async def addr_title(message: Message, state: FSMContext):
+    title = (message.text or "").strip()[:50]
+    if not title:
+        await message.answer("Напишите название.")
+        return
+    await state.update_data(addr_title=title)
+    await state.update_data(addr_step="loc")
+    await message.answer("Отправьте геолокацию этого адреса:", reply_markup=loc_kb())
+
+@router.message(AddrSave.title, F.location)
+async def addr_loc(message: Message, state: FSMContext):
+    data = await state.get_data()
+    title = data.get("addr_title", "Адрес")
+    uid = message.from_user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO addresses(user_id, title, lat, lon) VALUES(?,?,?,?)", (uid, title, message.location.latitude, message.location.longitude))
+        await db.commit()
+    await state.clear()
+    await message.answer("Адрес " + title + " сохранён!", reply_markup=client_menu())
+
+@router.message(F.text == BTN_REPEAT)
+async def repeat_order(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT from_lat, from_lon, to_lat, to_lon, distance, tariff FROM orders WHERE client_id=? ORDER BY id DESC LIMIT 1", (uid,))
+        row = await cur.fetchone()
+    if not row:
+        await message.answer("У вас ещё нет заказов.")
+        return
+    builder = InlineKeyboardBuilder()
+    for key, t in TARIFFS.items():
+        dist = row[4] or 0
+        price = int(t["base"] + t["rate"] * dist)
+        builder.button(text=t["name"] + " - " + str(price) + " сомони", callback_data="replay_tariff:" + key)
+    builder.adjust(1)
+    await state.set_state(OrderFlow.tariff)
+    await state.update_data(from_lat=row[0], from_lon=row[1], to_lat=row[2], to_lon=row[3], distance=row[4])
+    await message.answer("Повторить последнюю поездку\nРасстояние: " + str(round(row[4], 1)) + " км\n\nВыберите тариф:", reply_markup=builder.as_markup())
+
+@router.callback_query(F.data.startswith("replay_tariff:"))
+async def replay_tariff(call: CallbackQuery, state: FSMContext):
+    key = call.data.split(":")[1]
+    data = await state.get_data()
+    price = int(TARIFFS[key]["base"] + TARIFFS[key]["rate"] * data["distance"])
+    await state.update_data(tariff=key, price=price)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Наличные", callback_data="pay:cash")
+    builder.button(text="Картой", callback_data="pay:card")
+    builder.adjust(2)
+    await state.set_state(OrderFlow.payment)
+    await call.message.edit_text(TARIFFS[key]["name"] + "\nЦена: " + str(price) + " сомони\n\nОплата?", reply_markup=builder.as_markup())
+    await call.answer()
+
 @router.message(F.text == BTN_ONLINE)
 async def go_online(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -676,7 +840,7 @@ async def go_online(message: Message, state: FSMContext):
         await message.answer("Ваша заявка отклонена.\n\nСвяжитесь с администратором.")
         return
     if not arow or not arow[0]:
-        await message.answer("Вы ещё не одобрены админом.\n\nДождитесь подтверждения - тогда сможете работать.")
+        await message.answer("Вы ещё не одобрены админом.\n\nДождитесь подтверждения.")
         return
     if not await has_subscription(message.from_user.id):
         await message.answer("Нет подписки. Стоимость: " + str(SUB_PRICE) + " сомони/день")
@@ -724,7 +888,7 @@ async def drv_class(message: Message, state: FSMContext):
     cls = message.text
     await state.update_data(car_class=cls)
     await state.set_state(DriverReg.car_photo)
-    await message.answer("Класс: " + cls + "\n\nОтправьте фото машины с номером (видно номер):", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Класс: " + cls + "\n\nОтправьте фото машины с номером:", reply_markup=ReplyKeyboardRemove())
 
 @router.message(DriverReg.car_class)
 async def drv_class_wrong(message: Message):
@@ -758,7 +922,7 @@ async def drv_self_photo(message: Message, state: FSMContext):
     await state.clear()
     phone = row[0] if row else "-"
     name = ((row[1] or "") + " " + (row[2] or "")).strip() if row else "-"
-    await message.answer("Данные отправлены администратору на проверку.\n\nОжидайте одобрения. Пока вы не одобрены - заказы не приходят.", reply_markup=driver_menu())
+    await message.answer("Данные отправлены администратору на проверку.\n\nОжидайте одобрения.", reply_markup=driver_menu())
     if ADMIN_ID:
         try:
             text = ("НОВЫЙ ВОДИТЕЛЬ\n\n"
@@ -879,12 +1043,61 @@ async def promo_apply(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE promos SET uses = uses + 1 WHERE code=?", (code,))
         await db.commit()
-    await show_confirm(message, state)
+    await state.set_state(OrderFlow.when)
+    await message.answer("Когда подать машину?", reply_markup=when_kb())
 
 @router.callback_query(OrderFlow.promo, F.data == "promo_skip")
 async def promo_skip(call: CallbackQuery, state: FSMContext):
-    await show_confirm(call.message, state)
+    await state.set_state(OrderFlow.when)
+    await call.message.edit_text("Когда подать машину?")
+    await call.message.answer("Выберите:", reply_markup=when_kb())
     await call.answer()
+
+@router.message(OrderFlow.when, F.text.in_(["Сейчас", "Через 30 мин", "Через 1 час", "Через 2 часа", "Через 4 часа"]))
+async def when_choose(message: Message, state: FSMContext):
+    txt = message.text
+    if txt == "Сейчас":
+        scheduled = datetime.now()
+    elif txt == "Через 30 мин":
+        scheduled = datetime.now() + timedelta(minutes=30)
+    elif txt == "Через 1 час":
+        scheduled = datetime.now() + timedelta(hours=1)
+    elif txt == "Через 2 часа":
+        scheduled = datetime.now() + timedelta(hours=2)
+    elif txt == "Через 4 часа":
+        scheduled = datetime.now() + timedelta(hours=4)
+    else:
+        scheduled = datetime.now()
+    await state.update_data(scheduled_at=scheduled.isoformat())
+    await show_confirm(message, state)
+
+@router.message(OrderFlow.when, F.text == "Своё время")
+async def when_custom(message: Message, state: FSMContext):
+    await state.set_state(OrderFlow.when_custom)
+    await message.answer("Напишите время в формате ЧЧ:ММ\nНапример: 06:30 или 14:00")
+
+@router.message(OrderFlow.when_custom)
+async def when_custom_save(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    try:
+        parts = txt.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1])
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError
+        now = datetime.now()
+        scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if scheduled <= now:
+            scheduled = scheduled + timedelta(days=1)
+    except Exception:
+        await message.answer("Неверный формат. Попробуйте ещё раз (например 06:30):")
+        return
+    await state.update_data(scheduled_at=scheduled.isoformat())
+    await show_confirm(message, state)
+
+@router.message(OrderFlow.when)
+async def when_wrong(message: Message):
+    await message.answer("Выберите из кнопок ниже или нажмите Своё время.", reply_markup=when_kb())
 
 async def show_confirm(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -892,12 +1105,23 @@ async def show_confirm(message: Message, state: FSMContext):
     promo_text = ""
     if data.get("promo"):
         promo_text = "\nПромокод: " + data["promo"]
+    sched_text = ""
+    if data.get("scheduled_at"):
+        try:
+            sdt = datetime.fromisoformat(data["scheduled_at"])
+            now = datetime.now()
+            if (sdt - now).total_seconds() > 300:
+                sched_text = "\nНа время: " + sdt.strftime("%d.%m %H:%M")
+            else:
+                sched_text = "\nСейчас"
+        except Exception:
+            pass
     builder = InlineKeyboardBuilder()
     builder.button(text="Подтвердить", callback_data="confirm_order")
     builder.button(text="Отмена", callback_data="cancel_order")
     builder.adjust(2)
     await state.set_state(OrderFlow.confirm)
-    await message.answer(TARIFFS[data["tariff"]]["name"] + "\nЦена: " + str(data["price"]) + " сомони\nОплата: " + pay_text + promo_text + "\n\nПодтвердить?", reply_markup=builder.as_markup())
+    await message.answer(TARIFFS[data["tariff"]]["name"] + "\nЦена: " + str(data["price"]) + " сомони\nОплата: " + pay_text + promo_text + sched_text + "\n\nПодтвердить?", reply_markup=builder.as_markup())
 
 @router.callback_query(OrderFlow.confirm, F.data == "cancel_order")
 async def cancel_order(call: CallbackQuery, state: FSMContext):
@@ -909,8 +1133,18 @@ async def cancel_order(call: CallbackQuery, state: FSMContext):
 @router.callback_query(OrderFlow.confirm, F.data == "confirm_order")
 async def confirm_order(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
+    sched_at = data.get("scheduled_at")
+    is_scheduled = False
+    if sched_at:
+        try:
+            sdt = datetime.fromisoformat(sched_at)
+            if (sdt - datetime.now()).total_seconds() > 300:
+                is_scheduled = True
+        except Exception:
+            pass
+    status = "scheduled" if is_scheduled else "pending"
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("INSERT INTO orders(client_id, from_lat, from_lon, to_lat, to_lon, distance, price, tariff, payment, promo, discount) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (call.from_user.id, data["from_lat"], data["from_lon"], data["to_lat"], data["to_lon"], data["distance"], data["price"], data["tariff"], data.get("payment", "cash"), data.get("promo", ""), data.get("discount", 0)))
+        cur = await db.execute("INSERT INTO orders(client_id, from_lat, from_lon, to_lat, to_lon, distance, price, tariff, payment, promo, discount, scheduled_at, status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (call.from_user.id, data["from_lat"], data["from_lon"], data["to_lat"], data["to_lon"], data["distance"], data["price"], data["tariff"], data.get("payment", "cash"), data.get("promo", ""), data.get("discount", 0), sched_at, status))
         order_id = cur.lastrowid
         await db.commit()
     await state.clear()
@@ -918,22 +1152,50 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     builder.button(text="Отменить заказ", callback_data="client_cancel:" + str(order_id))
     pay_text = "Наличные" if data.get("payment") == "cash" else "Картой"
     eta = estimate_minutes(data["distance"])
-    await call.message.edit_text("Заказ #" + str(order_id) + " создан!\n\nЦена: " + str(data["price"]) + " сомони\nОплата: " + pay_text + "\nВремя: " + str(eta) + " мин\n\nИщем водителя...")
+    if is_scheduled:
+        sdt = datetime.fromisoformat(sched_at)
+        await call.message.edit_text("Заказ #" + str(order_id) + " создан!\n\nЦена: " + str(data["price"]) + " сомони\nОплата: " + pay_text + "\n\nНа время: " + sdt.strftime("%d.%m.%Y %H:%M") + "\n\nМы напомним водителям за 40 минут.")
+    else:
+        await call.message.edit_text("Заказ #" + str(order_id) + " создан!\n\nЦена: " + str(data["price"]) + " сомони\nОплата: " + pay_text + "\nВремя: " + str(eta) + " мин\n\nИщем водителя...")
+        await notify_drivers(call.bot, order_id, data)
     await call.message.answer("Ожидайте:", reply_markup=builder.as_markup())
-    await notify_drivers(call.bot, order_id, data)
     await call.answer()
 
 async def notify_drivers(bot: Bot, order_id: int, data: dict):
+    flat = data.get("from_lat")
+    flon = data.get("from_lon")
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT user_id FROM users WHERE role='driver' AND online=1 AND approved=1 AND rejected=0")
+        cur = await db.execute("SELECT user_id, driver_lat, driver_lon FROM users WHERE role='driver' AND online=1 AND approved=1 AND rejected=0")
         drivers = await cur.fetchall()
     if not drivers:
         return
+    near = []
+    far = []
+    for uid, dlat, dlon in drivers:
+        if dlat and dlon and flat and flon:
+            dist = haversine(dlat, dlon, flat, flon)
+            if dist <= NEAR_RADIUS:
+                near.append((uid, dist))
+            else:
+                far.append((uid, dist))
+        else:
+            far.append((uid, 999))
+    near.sort(key=lambda x: x[1])
+    far.sort(key=lambda x: x[1])
     builder = InlineKeyboardBuilder()
     builder.button(text="Принять заказ", callback_data="accept:" + str(order_id))
     pay_text = "Наличные" if data.get("payment") == "cash" else "Картой"
-    text = "Новый заказ #" + str(order_id) + "\n\n" + TARIFFS[data["tariff"]]["name"] + "\nОплата: " + pay_text + "\nРасстояние: " + str(round(data["distance"], 1)) + " км\nЦена: " + str(data["price"]) + " сомони"
-    for (uid,) in drivers:
+    text = "НОВЫЙ ЗАКАЗ #" + str(order_id) + "\n\n" + TARIFFS[data["tariff"]]["name"] + "\nОплата: " + pay_text + "\nРасстояние: " + str(round(data["distance"], 1)) + " км\nЦена: " + str(data["price"]) + " сомони"
+    for uid, _ in near:
+        try:
+            for _i in range(3):
+                await bot.send_message(uid, text, reply_markup=builder.as_markup())
+                await asyncio.sleep(0.3)
+        except Exception as e:
+            logging.warning("Error: " + str(e))
+    if near:
+        await asyncio.sleep(45)
+    for uid, _ in far:
         try:
             await bot.send_message(uid, text, reply_markup=builder.as_markup())
         except Exception as e:
@@ -949,7 +1211,7 @@ async def accept_order(call: CallbackQuery):
             await call.answer("Не найден", show_alert=True)
             return
         status, client_id, price, flat, flon, tlat, tlon, payment = row
-        if status != "pending":
+        if status not in ("pending", "scheduled"):
             await call.answer("Уже занят", show_alert=True)
             return
         await db.execute("UPDATE orders SET driver_id=?, status='accepted' WHERE id=?", (call.from_user.id, order_id))
@@ -994,11 +1256,11 @@ async def accept_order(call: CallbackQuery):
             await db.commit()
     await call.message.edit_text("Вы приняли заказ #" + str(order_id) + "\n\nЦена: " + str(price) + " сомони\nОплата: " + pay_text + "\n\nДо клиента: " + eta_driver_text + "\nПоездка: " + eta_ride_text + "\n\nКлиент: " + client_name + "\nТел: " + str(client_phone))
     await call.bot.send_location(call.from_user.id, latitude=flat, longitude=flon)
-    await call.bot.send_message(call.from_user.id, "Маршрут: " + nav_link(flat, flon, tlat, tlon))
+    await call.bot.send_message(call.from_user.id, "Маршрут к клиенту (точка A):\n" + nav_link(dlat if dlat else flat, dlon if dlon else flon, flat, flon))
     dkb = InlineKeyboardBuilder()
     dkb.button(text="Я выехал", callback_data="drv_status:on_way:" + str(order_id))
     dkb.button(text="Я рядом", callback_data="drv_status:near:" + str(order_id))
-    dkb.button(text="Я приехал", callback_data="drv_status:arrived:" + str(order_id))
+    dkb.button(text="Я приехал (взял клиента)", callback_data="drv_status:picked:" + str(order_id))
     dkb.button(text="Чат с клиентом", callback_data="chat_start:" + str(order_id))
     dkb.button(text="Завершить поездку", callback_data="finish:" + str(order_id))
     dkb.adjust(1)
@@ -1023,26 +1285,35 @@ async def drv_status(call: CallbackQuery):
     status_type = parts[1]
     order_id = int(parts[2])
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT client_id, status FROM orders WHERE id=?", (order_id,))
+        cur = await db.execute("SELECT client_id, status, to_lat, to_lon FROM orders WHERE id=?", (order_id,))
         row = await cur.fetchone()
     if not row or row[1] not in ("accepted", "arrived", "started"):
         await call.answer("Заказ не активен", show_alert=True)
         return
     client_id = row[0]
+    tlat = row[2]
+    tlon = row[3]
     texts = {
         "on_way": "Водитель выехал к вам!",
         "near": "Водитель уже рядом!",
         "arrived": "Водитель приехал! Выходите к машине.",
+        "picked": "Водитель забрал вас! Поехали к месту назначения.",
     }
     if status_type in texts:
         try:
             await call.bot.send_message(client_id, texts[status_type])
         except Exception:
             pass
-    if status_type == "arrived":
+    if status_type in ("arrived", "picked"):
+        new_status = "arrived" if status_type == "arrived" else "started"
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE orders SET status='arrived' WHERE id=?", (order_id,))
+            await db.execute("UPDATE orders SET status=? WHERE id=?", (new_status, order_id))
             await db.commit()
+    if status_type == "picked":
+        try:
+            await call.bot.send_message(call.from_user.id, "Маршрут к месту назначения (точка B):\n" + nav_link(0, 0, tlat, tlon))
+        except Exception:
+            pass
     await call.answer("Отправлено клиенту")
 
 @router.callback_query(F.data.startswith("where_driver:"))
@@ -1129,7 +1400,7 @@ async def client_cancel(call: CallbackQuery):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT status, driver_id FROM orders WHERE id=?", (order_id,))
         row = await cur.fetchone()
-        if not row or row[0] not in ("pending", "accepted", "arrived", "started"):
+        if not row or row[0] not in ("pending", "scheduled", "accepted", "arrived", "started"):
             await call.answer("Нельзя", show_alert=True)
             return
         status, driver_id = row
@@ -1524,7 +1795,7 @@ async def broadcast_start(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await state.set_state(Broadcast.text)
-    await message.answer("Напишите текст для рассылки. Отправится всем клиентам и водителям.\n\nДля отмены: /cancel", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Напишите текст для рассылки.\n\nДля отмены: /cancel", reply_markup=ReplyKeyboardRemove())
 
 @router.message(Command("cancel"))
 async def cancel_broadcast(message: Message, state: FSMContext):
