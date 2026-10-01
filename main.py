@@ -951,8 +951,13 @@ async def drv_status(call: CallbackQuery):
             await db.execute("UPDATE orders SET status=? WHERE id=?", (new_status, order_id))
             await db.commit()
     if status_type == "picked":
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT driver_lat, driver_lon FROM users WHERE user_id=?", (call.from_user.id,))
+            drow = await cur.fetchone()
+        cur_lat = drow[0] if drow and drow[0] else tlat
+        cur_lon = drow[1] if drow and drow[1] else tlon
         try:
-            await call.bot.send_message(call.from_user.id, "🚕 Маршрут к месту назначения (точка B):\n" + nav_link(0, 0, tlat, tlon))
+            await call.bot.send_message(call.from_user.id, "🚕 Маршрут к месту назначения (точка B):\n" + nav_link(cur_lat, cur_lon, tlat, tlon))
         except Exception:
             pass
     await call.answer("Отправлено клиенту")
