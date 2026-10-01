@@ -18,7 +18,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = 0
+ADMIN_ID = 1120621262
 DB_PATH = "taxi.db"
 SUB_PRICE = 20
 REF_TARGET = 5
@@ -832,9 +832,7 @@ async def notify_drivers(bot: Bot, order_id: int, data: dict):
     text = "🔔 Новый заказ #" + str(order_id) + "\n\n" + TARIFFS[data["tariff"]]["name"] + "\n💳 " + pay_text + "\n📏 " + str(round(data["distance"], 1)) + " км\n💰 " + str(data["price"]) + " сомони"
     for uid, _ in near:
         try:
-            for _i in range(3):
-                await bot.send_message(uid, text, reply_markup=builder.as_markup())
-                await asyncio.sleep(0.3)
+            await bot.send_message(uid, text, reply_markup=builder.as_markup())
         except Exception as e:
             logging.warning("Error: " + str(e))
     if near:
