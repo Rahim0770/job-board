@@ -4,6 +4,7 @@ import logging
 import os
 import csv
 import io
+import hashlib
 from datetime import datetime, timedelta
 import aiosqlite
 from aiohttp import web
@@ -12,13 +13,14 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
+    Message ", CallbackQuery, ReplyKeyboardMarkup,📋 KeyboardButton,
     ReplyKeyboardRemove, Contact, BufferedInputFile
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = 1120621262
+ADMIN_PASSWORD = "KING0770"
 DB_PATH = "taxi.db"
 SUB_PRICE = 20
 REF_TARGET = 5
@@ -26,26 +28,21 @@ REF_BONUS_DAYS = 3
 AVG_SPEED = 30
 NEAR_RADIUS = 2.0
 CARD_NUMBER = "013585959"
+MAX_ORDERS_PER_HOUR = 5
+MIN_PRICE_PERCENT = 80
+MAX_NEGOTIATION_ROUNDS = 3
 
 logging.basicConfig(level=logging.INFO)
 
 T = {
     "ru": {
-        "welcome": "👋 Добро пожаловать в Такси-бот!",
-        "lang_ask": "👇 Выберите язык / Забонро интихоб кунед:",
-        "phone_ask": "📱 Шаг 1/3: Отправьте свой номер телефона:",
-        "phone_btn": "📱 Отправить номер",
-        "phone_saved": "✅ Номер сохранён.\n\n👤 Шаг 2/3: Напишите своё имя:",
-        "last_ask": "\n\n👤 Шаг 3/3: Напишите свою фамилию:",
-        "name_saved": "✅ Имя: ",
-        "reg_done": "✅ Регистрация завершена!\n\n",
         "choose_role": "👋 С возвращением! Выберите роль:",
         "client": "🚕 Я клиент",
         "driver": "🚗 Я водитель",
         "complaint": "⚠️ Пожаловаться",
         "change": "🔄 Сменить роль",
         "order": "🚕 Заказать такси",
-        "history": "📋 История",
+        "history": История",
         "ref": "🎁 Приведи друга",
         "online": "🟢 Я на линии",
         "offline": "🔴 Уйти с линии",
@@ -79,17 +76,10 @@ T = {
         "wait_approve": "⏳ Ожидайте одобрения админом.\n\nПока заявка не принята — работать нельзя.",
         "rejected": "❌ Ваша заявка отклонена.\n\nСвяжитесь с администратором.",
         "cancel": "❌ Отмена",
-        "change_lang": "🌍 Язык",
+        "logs": "📜 Логи",
+        "blacklist": "🚫 Чёрный список",
     },
     "tj": {
-        "welcome": "👋 Хуш омадед ба боти Такси!",
-        "lang_ask": "👇 Забонро интихоб кунед / Выберите язык:",
-        "phone_ask": "📱 Қадами 1/3: Рақами телефони худро фиристед:",
-        "phone_btn": "📱 Фиристодани рақам",
-        "phone_saved": "✅ Рақам нигоҳ дошта шуд.\n\n👤 Қадами 2/3: Номи худро нависед:",
-        "last_ask": "\n\n👤 Қадами 3/3: Насаби худро нависед:",
-        "name_saved": "✅ Ном: ",
-        "reg_done": "✅ Бақайдгирӣ анҷом ёфт!\n\n",
         "choose_role": "👋 Хуш омадед! Нақши худро интихоб кунед:",
         "client": "🚕 Ман мизоҷ",
         "driver": "🚗 Ман ронанда",
@@ -127,10 +117,11 @@ T = {
         "you_driver": "✅ Шумо ҳамчун ронанда дохил шудед.\n\n",
         "sub_ok": "✅ Обуна фаъол",
         "sub_no": "❌ Обуна нест — 20 сомонӣ пардохт кунед",
-        "wait_approve": "⏳ Интизори тасдиқи админ.\n\nТо тасдиқ нашавад — кор кардан мумкин нест.",
-        "rejected": "❌ Дархости шумо рад карда шуд.\n\nБо админ тамос гиред.",
+        "wait_approve": "⏳ Интизори тасдиқи админ.",
+        "rejected": "❌ Дархости шумо рад карда шуд.",
         "cancel": "❌ Бекор кардан",
-        "change_lang": "🌍 Забон",
+        "logs": "📜 Логҳо",
+        "blacklist": "🚫 Рӯйхати сиёҳ",
     },
 }
 
@@ -139,16 +130,16 @@ def tr(lang, key):
 
 TARIFFS = {
     "economy":  {"name": "🚕 Эконом",  "base": 10, "rate": 3},
-    "comfort":  {"name": "🚙 Комфорт", "base": 15, "rate": 4},
     "business": {"name": "🚘 Бизнес",  "base": 25, "rate": 7},
 }
 
-CAR_CLASSES = ["Эконом", "Комфорт", "Бизнес"]
+CAR_CLASSES = ["Эконом", "Бизнес"]
 
 router = Router()
 
 class Reg(StatesGroup):
     phone = State()
+    call_phone = State()
     first_name = State()
     last_name = State()
 
@@ -168,13 +159,21 @@ class OrderFlow(StatesGroup):
     promo = State()
     when = State()
     when_custom = State()
+    comment = State()
+    client_offer = State()
     confirm = State()
+
+class DriverOffer(StatesGroup):
+    waiting = State()
 
 class Complaint(StatesGroup):
     text = State()
 
 class AdminReply(StatesGroup):
     waiting = State()
+
+class Admin2FA(StatesGroup):
+    waiting_password = State()
 
 class SubPayment(StatesGroup):
     receipt = State()
@@ -211,6 +210,9 @@ def estimate_minutes(km, speed=AVG_SPEED):
         return None
     return max(1, round(km / speed * 60))
 
+def min_price_for(recommended):
+    return int(recommended * MIN_PRICE_PERCENT / 100)
+
 async def get_lang(uid):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT lang FROM users WHERE user_id=?", (uid,))
@@ -223,6 +225,14 @@ async def set_lang(uid, lang):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO users(user_id, lang) VALUES(?, ?) ON CONFLICT(user_id) DO UPDATE SET lang=excluded.lang", (uid, lang))
         await db.commit()
+
+async def log_action(uid, action, details=""):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("INSERT INTO logs(user_id, action, details, created_at) VALUES(?,?,?,?)", (uid, action, details[:500], datetime.now().isoformat()))
+            await db.commit()
+    except Exception as e:
+        logging.warning("Log error: " + str(e))
 
 def lang_kb():
     return ReplyKeyboardMarkup(
@@ -255,7 +265,6 @@ def class_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Эконом")],
-            [KeyboardButton(text="Комфорт")],
             [KeyboardButton(text="Бизнес")],
         ],
         resize_keyboard=True, one_time_keyboard=True
@@ -270,6 +279,8 @@ def when_kb(lang="ru"):
                 [KeyboardButton(text="⏰ Баъди 1 соат")],
                 [KeyboardButton(text="⏰ Баъди 2 соат")],
                 [KeyboardButton(text="⏰ Баъди 4 соат")],
+                [KeyboardButton(text="📅 Пагоҳ")],
+                [KeyboardButton(text="📅 Пасфардо")],
                 [KeyboardButton(text="🕐 Вақти дигар")],
             ],
             resize_keyboard=True, one_time_keyboard=True
@@ -281,6 +292,8 @@ def when_kb(lang="ru"):
             [KeyboardButton(text="⏰ Через 1 час")],
             [KeyboardButton(text="⏰ Через 2 часа")],
             [KeyboardButton(text="⏰ Через 4 часа")],
+            [KeyboardButton(text="📅 Завтра")],
+            [KeyboardButton(text="📅 Послезавтра")],
             [KeyboardButton(text="🕐 Своё время")],
         ],
         resize_keyboard=True, one_time_keyboard=True
@@ -338,6 +351,7 @@ def admin_menu(lang="ru"):
             [KeyboardButton(text=tr(lang, "subreq")), KeyboardButton(text=tr(lang, "promo"))],
             [KeyboardButton(text=tr(lang, "review")), KeyboardButton(text=tr(lang, "top"))],
             [KeyboardButton(text=tr(lang, "commissions")), KeyboardButton(text=tr(lang, "forecast"))],
+            [KeyboardButton(text=tr(lang, "logs")), KeyboardButton(text=tr(lang, "blacklist"))],
             [KeyboardButton(text=tr(lang, "broadcast")), KeyboardButton(text=tr(lang, "export"))],
             [KeyboardButton(text=tr(lang, "exit"))],
         ],
@@ -349,13 +363,14 @@ async def init_db():
         await db.executescript("""
         CREATE TABLE IF NOT EXISTS users(
             user_id INTEGER PRIMARY KEY,
-            role TEXT, phone TEXT,
+            role TEXT, phone TEXT, call_phone TEXT,
             first_name TEXT, last_name TEXT,
             online INTEGER DEFAULT 0,
             rating REAL DEFAULT 5.0, rides INTEGER DEFAULT 0,
             total_rides INTEGER DEFAULT 0,
             approved INTEGER DEFAULT 0,
             rejected INTEGER DEFAULT 0,
+            banned INTEGER DEFAULT 0,
             lang TEXT DEFAULT 'ru',
             sub_until TIMESTAMP,
             referred_by INTEGER,
@@ -373,6 +388,10 @@ async def init_db():
             payment TEXT DEFAULT 'cash',
             promo TEXT DEFAULT '', discount INTEGER DEFAULT 0,
             scheduled_at TIMESTAMP,
+            comment TEXT DEFAULT '',
+            recommended_price INTEGER DEFAULT 0,
+            negotiation_round INTEGER DEFAULT 0,
+            last_offer_by TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
             rating INTEGER DEFAULT 0,
             review TEXT DEFAULT '',
@@ -402,13 +421,18 @@ async def init_db():
             lat REAL, lon REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS logs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER, action TEXT, details TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """)
-        for col in ["first_name TEXT", "last_name TEXT", "car_class TEXT", "car_photo TEXT", "self_photo TEXT", "total_rides INTEGER DEFAULT 0", "approved INTEGER DEFAULT 0", "rejected INTEGER DEFAULT 0", "lang TEXT DEFAULT 'ru'"]:
+        for col in ["first_name TEXT", "last_name TEXT", "car_class TEXT", "car_photo TEXT", "self_photo TEXT", "total_rides INTEGER DEFAULT 0", "approved INTEGER DEFAULT 0", "rejected INTEGER DEFAULT 0", "lang TEXT DEFAULT 'ru'", "call_phone TEXT", "banned INTEGER DEFAULT 0"]:
             try:
                 await db.execute("ALTER TABLE users ADD COLUMN " + col)
             except Exception:
                 pass
-        for col in ["promo TEXT DEFAULT ''", "discount INTEGER DEFAULT 0", "review TEXT DEFAULT ''", "scheduled_at TIMESTAMP"]:
+        for col in ["promo TEXT DEFAULT ''", "discount INTEGER DEFAULT 0", "review TEXT DEFAULT ''", "scheduled_at TIMESTAMP", "comment TEXT DEFAULT ''", "recommended_price INTEGER DEFAULT 0", "negotiation_round INTEGER DEFAULT 0", "last_offer_by TEXT DEFAULT ''"]:
             try:
                 await db.execute("ALTER TABLE orders ADD COLUMN " + col)
             except Exception:
@@ -458,6 +482,12 @@ async def give_subscription(uid, days=1):
         await db.execute("UPDATE users SET sub_until=? WHERE user_id=?", (new_until.isoformat(), uid))
         await db.commit()
         return new_until
+
+async def is_banned(uid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT banned FROM users WHERE user_id=?", (uid,))
+        row = await cur.fetchone()
+        return row and row[0] == 1
 @router.message(F.text == "🇷🇺 Русский")
 async def set_lang_ru(message: Message, state: FSMContext):
     uid = message.from_user.id
@@ -466,7 +496,7 @@ async def set_lang_ru(message: Message, state: FSMContext):
         await message.answer("👋 С возвращением! Выберите роль:", reply_markup=main_menu("ru"))
     else:
         await state.set_state(Reg.phone)
-        await message.answer("📱 Шаг 1/3: Отправьте свой номер телефона:", reply_markup=phone_kb())
+        await message.answer("📱 Шаг 1/5: Отправьте свой номер телефона:", reply_markup=phone_kb())
 
 @router.message(F.text == "🇹🇯 Тоҷикӣ")
 async def set_lang_tj(message: Message, state: FSMContext):
@@ -476,7 +506,7 @@ async def set_lang_tj(message: Message, state: FSMContext):
         await message.answer("👋 Хуш омадед! Нақши худро интихоб кунед:", reply_markup=main_menu("tj"))
     else:
         await state.set_state(Reg.phone)
-        await message.answer("📱 Қадами 1/3: Рақами телефони худро фиристед:", reply_markup=phone_kb())
+        await message.answer("📱 Қадами 1/5: Рақами телефони худро фиристед:", reply_markup=phone_kb())
 
 @router.message(F.text.in_(["🌍 Язык", "🌍 Забон"]))
 async def change_lang(message: Message, state: FSMContext):
@@ -504,6 +534,9 @@ async def cmd_start(message: Message, state: FSMContext):
                             pass
         except Exception:
             pass
+    if await is_banned(uid):
+        await message.answer("🚫 Вы заблокированы.")
+        return
     if not await is_registered(uid):
         await state.set_state(Reg.phone)
         await message.answer("🇷🇺 Добро пожаловать!\n🇹🇯 Хуш омадед!\n\n👇 Выберите язык / Забонро интихоб кунед:", reply_markup=lang_kb())
@@ -519,12 +552,34 @@ async def reg_phone(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO users(user_id, phone) VALUES(?, ?) ON CONFLICT(user_id) DO UPDATE SET phone=excluded.phone", (uid, phone))
         await db.commit()
-    await state.set_state(Reg.first_name)
-    await message.answer(tr(lang, "phone_saved"), reply_markup=ReplyKeyboardRemove())
+    await state.set_state(Reg.call_phone)
+    if lang == "tj":
+        text = "✅ Рақами Telegram нигоҳ дошта шуд.\n\n📞 Қадами 2/5: Рақами иловагии худро барои занг нависед (ё - барои гузаштан):"
+    else:
+        text = "✅ Telegram-номер сохранён.\n\n📞 Шаг 2/5: Напишите свой номер для звонка (или - чтобы пропустить):"
+    await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
 @router.message(Reg.phone)
 async def reg_phone_wrong(message: Message):
     await message.answer("⚠️ Нажмите кнопку внизу.")
+
+@router.message(Reg.call_phone)
+async def reg_call_phone(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    lang = await get_lang(uid)
+   ны txt = (message.text or.")
+ "").strip()
+    call_phone = "" if txt == "-" else        txt[:30]
+    if return call_phone:
+        async with
+ aiosqlite.connect(DB_PATH   ) as db:
+            await db.execute("UPDATE users SET call_phone=? WHERE user_id=?", (call_phone, uid))
+            await db.commit()
+    await state.set_state(Reg.first_name)
+    if lang == "tj":
+        await message.answer("👤 Қадами 3/5: Номи худро нависед:")
+    else:
+        await message.answer("👤 Шаг 3/5: Напишите своё имя:")
 
 @router.message(Reg.first_name)
 async def reg_first_name(message: Message, state: FSMContext):
@@ -535,7 +590,10 @@ async def reg_first_name(message: Message, state: FSMContext):
     lang = await get_lang(message.from_user.id)
     await state.update_data(first_name=name)
     await state.set_state(Reg.last_name)
-    await message.answer(tr(lang, "name_saved") + name + tr(lang, "last_ask"))
+    if lang == "tj":
+        await message.answer("👤 Ном: " + name + "\n\n👤 Қадами 4/5: Насаби худро нависед:")
+    else:
+        await message.answer("👤 Имя: " + name + "\n\n👤 Шаг 4/5: Напишите свою фамилию:")
 
 @router.message(Reg.last_name)
 async def reg_last_name(message: Message, state: FSMContext):
@@ -548,32 +606,40 @@ async def reg_last_name(message: Message, state: FSMContext):
     lang = await get_lang(uid)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET first_name=?, last_name=? WHERE user_id=?", (data["first_name"], last, uid))
-        cur = await db.execute("SELECT phone FROM users WHERE user_id=?", (uid,))
+        cur = await db.execute("SELECT phone, call_phone FROM users WHERE user_id=?", (uid,))
         row = await cur.fetchone()
         await db.commit()
     await state.clear()
     phone = row[0] if row else "-"
+    call_phone = row[1] if row and row[1] else "—"
+    await log_action(uid, "register", data["first_name"] + " " + last)
     if ADMIN_ID:
         try:
             uname = "@" + message.from_user.username if message.from_user.username else "-"
-            await message.bot.send_message(ADMIN_ID, "Новый пользователь\n\n" + data["first_name"] + " " + last + "\n" + uname + "\n" + phone + "\nID: " + str(uid))
+            await message.bot.send_message(ADMIN_ID, "🆕 Новый пользователь\n\n👤 " + data["first_name"] + " " + last + "\n🔗 " + uname + "\n📱 Telegram: " + phone + "\n📞 Звонок: " + call_phone + "\n🆔 " + str(uid))
         except Exception:
             pass
-    await message.answer(tr(lang, "reg_done") + data["first_name"] + " " + last + "\n" + phone + "\n\n" + tr(lang, "choose_role"), reply_markup=main_menu(lang))
+    text = "✅ Регистрация завершена!\n\n👤 " + data["first_name"] + " " + last + "\n📱 " + phone + "\n📞 " + call_phone + "\n\nВыберите роль:"
+    await message.answer(text, reply_markup=main_menu(lang))
 
 @router.message(F.text.in_(["🚕 Я клиент", "🚕 Ман мизоҷ"]))
 async def role_client(message: Message):
     uid = message.from_user.id
-    if not await is_registered(uid):
+    if await is_banned(uid):
+        await message.answer("🚫 Заблокирова if not await is_registered(uid):
         await message.answer("Сначала /start")
         return
     lang = await get_lang(uid)
     await set_role(uid, "client")
+    await log_action(uid, "role_client")
     await message.answer(tr(lang, "you_client"), reply_markup=client_menu(lang))
 
 @router.message(F.text.in_(["🚗 Я водитель", "🚗 Ман ронанда"]))
 async def role_driver(message: Message, state: FSMContext):
     uid = message.from_user.id
+    if await is_banned(uid):
+        await message.answer("🚫 Заблокированы.")
+        return
     if not await is_registered(uid):
         await message.answer("Сначала /start")
         return
@@ -605,7 +671,18 @@ async def change_role(message: Message, state: FSMContext):
 
 @router.message(F.text.in_(["🚕 Заказать такси", "🚕 Фармоиши такси"]))
 async def order_start(message: Message, state: FSMContext):
-    lang = await get_lang(message.from_user.id)
+    uid = message.from_user.id
+    if await is_banned(uid):
+        await message.answer("🚫 Заблокированы.")
+        return
+    lang = await get_lang(uid)
+    hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM orders WHERE client_id=? AND created_at >= ?", (uid, hour_ago))
+        cnt = (await cur.fetchone())[0]
+    if cnt >= MAX_ORDERS_PER_HOUR:
+        await message.answer("⚠️ Слишком много заказов. Попробуйте через час.")
+        return
     await state.set_state(OrderFlow.from_loc)
     await message.answer(tr(lang, "from"), reply_markup=loc_kb())
 
@@ -621,7 +698,7 @@ async def to_loc(message: Message, state: FSMContext):
     data = await state.get_data()
     dist = haversine(data["from_lat"], data["from_lon"], message.location.latitude, message.location.longitude)
     if dist < 0.1:
-        await message.answer("⚠️ Слишком близко.")
+        await message.answer("⚠️ Слишком близко. Отправьте другую точку.")
         return
     await state.update_data(to_lat=message.location.latitude, to_lon=message.location.longitude, distance=dist)
     eta = estimate_minutes(dist)
@@ -638,7 +715,7 @@ async def choose_tariff(call: CallbackQuery, state: FSMContext):
     key = call.data.split(":")[1]
     data = await state.get_data()
     price = int(TARIFFS[key]["base"] + TARIFFS[key]["rate"] * data["distance"])
-    await state.update_data(tariff=key, price=price)
+    await state.update_data(tariff=key, price=price, recommended_price=price)
     builder = InlineKeyboardBuilder()
     builder.button(text="💵 Наличные", callback_data="pay:cash")
     builder.button(text="💳 Картой", callback_data="pay:card")
@@ -695,7 +772,7 @@ async def promo_skip(call: CallbackQuery, state: FSMContext):
     await call.message.answer("Выберите:", reply_markup=when_kb(lang))
     await call.answer()
 
-@router.message(OrderFlow.when, F.text.in_(["🚕 Сейчас", "⏰ Через 30 мин", "⏰ Через 1 час", "⏰ Через 2 часа", "⏰ Через 4 часа", "🚕 Ҳозир", "⏰ Баъди 30 дақиқа", "⏰ Баъди 1 соат", "⏰ Баъди 2 соат", "⏰ Баъди 4 соат"]))
+@router.message(OrderFlow.when, F.text.in_(["🚕 Сейчас", "⏰ Через 30 мин", "⏰ Через 1 час", "⏰ Через 2 часа", "⏰ Через 4 часа", "📅 Завтра", "📅 Послезавтра", "🚕 Ҳозир", "⏰ Баъди 30 дақиқа", "⏰ Баъди 1 соат", "⏰ Баъди 2 соат", "⏰ Баъди 4 соат", "📅 Пагоҳ", "📅 Пасфардо"]))
 async def when_choose(message: Message, state: FSMContext):
     txt = message.text
     now = datetime.now()
@@ -709,10 +786,15 @@ async def when_choose(message: Message, state: FSMContext):
         scheduled = now + timedelta(hours=2)
     elif txt in ("⏰ Через 4 часа", "⏰ Баъди 4 соат"):
         scheduled = now + timedelta(hours=4)
+    elif txt in ("📅 Завтра", "📅 Пагоҳ"):
+        scheduled = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    elif txt in ("📅 Послезавтра", "📅 Пасфардо"):
+        scheduled = (now + timedelta(days=2)).replace(hour=9, minute=0, second=0, microsecond=0)
     else:
         scheduled = now
     await state.update_data(scheduled_at=scheduled.isoformat())
-    await show_confirm(message, state)
+    await state.set_state(OrderFlow.comment)
+    await message.answer("📝 Напишите комментарий к заказу (или - чтобы пропустить):\n\nНапример: «У 2-го подъезда», «С детьми», «Не звонить, писать»", reply_markup=ReplyKeyboardRemove())
 
 @router.message(OrderFlow.when, F.text.in_(["🕐 Своё время", "🕐 Вақти дигар"]))
 async def when_custom(message: Message, state: FSMContext):
@@ -736,35 +818,83 @@ async def when_custom_save(message: Message, state: FSMContext):
         await message.answer("⚠️ Неверный формат. Попробуйте ещё раз:")
         return
     await state.update_data(scheduled_at=scheduled.isoformat())
-    await show_confirm(message, state)
+    await state.set_state(OrderFlow.comment)
+    await message.answer("📝 Напишите комментарий к заказу (или - чтобы пропустить):")
 
 @router.message(OrderFlow.when)
 async def when_wrong(message: Message, state: FSMContext):
     lang = await get_lang(message.from_user.id)
     await message.answer("Выберите из кнопок ниже:", reply_markup=when_kb(lang))
 
+@router.message(OrderFlow.comment)
+async def order_comment(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    comment = "" if txt == "-" else txt[:200]
+    await state.update_data(comment=comment)
+    data = await state.get_data()
+    recommended = data.get("recommended_price", data.get("price", 0))
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Согласен — " + str(recommended) + " сомони", callback_data="offer_agree")
+    builder.button(text="💰 Предложить свою цену", callback_data="offer_custom")
+    builder.adjust(1)
+    await state.set_state(OrderFlow.client_offer)
+    await message.answer("🚕 " + TARIFFS[data["tariff"]]["name"] + "\n📏 ~" + str(round(data["distance"], 1)) + " км\n💰 Рекомендуемая цена: " + str(recommended) + " сомони\n\nКак поедем?", reply_markup=builder.as_markup())
+
+@router.callback_query(OrderFlow.client_offer, F.data == "offer_agree")
+async def offer_agree(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recommended = data.get("recommended_price", data.get("price", 0))
+    await state.update_data(price=recommended, promo="", discount=0)
+    await show_confirm(call.message, state)
+    await call.answer()
+
+@router.callback_query(OrderFlow.client_offer, F.data == "offer_custom")
+async def offer_custom(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text("📝 Введите свою цену в сомони (только число):")
+    await call.answer()
+
+@router.message(OrderFlow.client_offer, F.text)
+async def client_offer_save(message: Message, state: FSMContext):
+    try:
+        offer = int((message.text or "").strip())
+        if offer < 1:
+            raise ValueError
+    except Exception:
+        await message.answer("⚠️ Введите целое число.")
+        return
+    data = await state.get_data()
+    recommended = data.get("recommended_price", data.get("price", 0))
+    minimum = min_price_for(recommended)
+    if offer < minimum:
+        await message.answer("⚠️ Слишком низкая цена. Введите больше.")
+        return
+    await state.update_data(price=offer, promo="", discount=0)
+    await show_confirm(message, state)
+
 async def show_confirm(message: Message, state: FSMContext):
     data = await state.get_data()
     pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
-    promo_text = ""
-    if data.get("promo"):
-        promo_text = "\n🎁 Промокод: " + data["promo"]
     sched_text = ""
     if data.get("scheduled_at"):
         try:
             sdt = datetime.fromisoformat(data["scheduled_at"])
             if (sdt - datetime.now()).total_seconds() > 300:
                 sched_text = "\n📅 На время: " + sdt.strftime("%d.%m %H:%M")
-            else:
-                sched_text = "\n🚕 Сейчас"
         except Exception:
             pass
+    comment_text = ""
+    if data.get("comment"):
+        comment_text = "\n💬 " + data["comment"]
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Подтвердить", callback_data="confirm_order")
     builder.button(text="❌ Отмена", callback_data="cancel_order")
     builder.adjust(2)
     await state.set_state(OrderFlow.confirm)
-    await message.answer(TARIFFS[data["tariff"]]["name"] + "\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + promo_text + sched_text + "\n\nПодтвердить?", reply_markup=builder.as_markup())
+    text = ("🚕 " + TARIFFS[data["tariff"]]["name"] + "\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + sched_text + comment_text + "\n\nПодтвердить заказ?")
+    try:
+        await message.edit_text(text, reply_markup=builder.as_markup())
+    except Exception:
+        await message.answer(text, reply_markup=builder.as_markup())
 
 @router.callback_query(OrderFlow.confirm, F.data == "cancel_order")
 async def cancel_order(call: CallbackQuery, state: FSMContext):
@@ -788,28 +918,28 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
             pass
     status = "scheduled" if is_scheduled else "pending"
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("INSERT INTO orders(client_id, from_lat, from_lon, to_lat, to_lon, distance, price, tariff, payment, promo, discount, scheduled_at, status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (call.from_user.id, data["from_lat"], data["from_lon"], data["to_lat"], data["to_lon"], data["distance"], data["price"], data["tariff"], data.get("payment", "cash"), data.get("promo", ""), data.get("discount", 0), sched_at, status))
+        cur = await db.execute("INSERT INTO orders(client_id, from_lat, from_lon, to_lat, to_lon, distance, price, tariff, payment, promo, discount, scheduled_at, comment, recommended_price, status, last_offer_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (call.from_user.id, data["from_lat"], data["from_lon"], data["to_lat"], data["to_lon"], data["distance"], data["price"], data["tariff"], data.get("payment", "cash"), data.get("promo", ""), data.get("discount", 0), sched_at, data.get("comment", ""), data.get("recommended_price", 0), status, "client"))
         order_id = cur.lastrowid
         await db.commit()
     await state.clear()
+    await log_action(call.from_user.id, "order_created", "id=" + str(order_id) + " price=" + str(data["price"]))
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отменить заказ", callback_data="client_cancel:" + str(order_id))
     pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
     eta = estimate_minutes(data["distance"])
     if is_scheduled:
         sdt = datetime.fromisoformat(sched_at)
-        await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n\n📅 На время: " + sdt.strftime("%d.%m.%Y %H:%M") + "\n\nМы напомним водителям за 40 минут.")
+        await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n\n📅 На время: " + sdt.strftime("%d.%m.%Y %H:%M") + "\n\nМы напомним водителям заранее.")
     else:
         await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n⏳ " + str(eta) + " мин\n\n🔍 Ищем водителя...")
         await notify_drivers(call.bot, order_id, data)
     await call.message.answer("Ожидайте:", reply_markup=builder.as_markup())
     await call.answer()
-
 async def notify_drivers(bot: Bot, order_id: int, data: dict):
     flat = data.get("from_lat")
     flon = data.get("from_lon")
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT user_id, driver_lat, driver_lon FROM users WHERE role='driver' AND online=1 AND approved=1 AND rejected=0")
+        cur = await db.execute("SELECT user_id, driver_lat, driver_lon FROM users WHERE role='driver' AND online=1 AND approved=1 AND rejected=0 AND banned=0")
         drivers = await cur.fetchall()
     if not drivers:
         return
@@ -827,9 +957,17 @@ async def notify_drivers(bot: Bot, order_id: int, data: dict):
     near.sort(key=lambda x: x[1])
     far.sort(key=lambda x: x[1])
     builder = InlineKeyboardBuilder()
-    builder.button(text="🚗 Принять заказ", callback_data="accept:" + str(order_id))
+    builder.button(text="✅ Принять — " + str(data["price"]) + " сомони", callback_data="accept:" + str(order_id))
+    builder.button(text="💰 Предложить свою цену", callback_data="driver_offer:" + str(order_id))
+    builder.adjust(1)
     pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
-    text = "🔔 Новый заказ #" + str(order_id) + "\n\n" + TARIFFS[data["tariff"]]["name"] + "\n💳 " + pay_text + "\n📏 " + str(round(data["distance"], 1)) + " км\n💰 " + str(data["price"]) + " сомони"
+    text = ("🔔 Новый заказ #" + str(order_id) + "\n\n"
+            "🚕 " + TARIFFS[data["tariff"]]["name"] + "\n"
+            "📏 ~" + str(round(data["distance"], 1)) + " км\n"
+            "💳 " + pay_text + "\n"
+            "💰 Клиент предлагает: " + str(data["price"]) + " сомони")
+    if data.get("comment"):
+        text += "\n💬 " + data["comment"]
     for uid, _ in near:
         try:
             await bot.send_message(uid, text, reply_markup=builder.as_markup())
@@ -842,83 +980,248 @@ async def notify_drivers(bot: Bot, order_id: int, data: dict):
             await bot.send_message(uid, text, reply_markup=builder.as_markup())
         except Exception as e:
             logging.warning("Error: " + str(e))
+
+@router.callback_query(F.data.startswith("driver_offer:"))
+async def driver_offer_start(call: CallbackQuery, state: FSMContext):
+    order_id = int(call.data.split(":")[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT status, negotiation_round FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+    if not row or row[0] not in ("pending", "scheduled", "negotiating"):
+        await call.answer("Заказ недоступен", show_alert=True)
+        return
+    if row[1] >= MAX_NEGOTIATION_ROUNDS:
+        await call.answer("Максимум 3 раунда", show_alert=True)
+        return
+    await state.set_state(DriverOffer.waiting)
+    await state.update_data(order_id=order_id)
+    await call.message.answer("📝 Введите свою цену в сомони (только число):")
+    await call.answer()
+
+@router.message(DriverOffer.waiting)
+async def driver_offer_save(message: Message, state: FSMContext):
+    try:
+        offer = int((message.text or "").strip())
+        if offer < 1:
+            raise ValueError
+    except Exception:
+        await message.answer("⚠️ Введите целое число.")
+        return
+    data = await state.get_data()
+    order_id = data.get("order_id")
+    await state.clear()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT client_id, price, recommended_price, negotiation_round, status, tariff, distance, from_lat, from_lon, payment, comment FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+        if not row or row[4] not in ("pending", "scheduled", "negotiating"):
+            await message.answer("⚠️ Заказ уже недоступен.")
+            return
+        client_id = row[0]
+        recommended = row[2] or row[1]
+        round_n = row[3] + 1
+        minimum = min_price_for(recommended)
+        if offer < minimum:
+            await message.answer("⚠️ Слишком низкая цена. Введите больше.")
+            return
+        await db.execute("UPDATE orders SET driver_id=?, status='negotiating', negotiation_round=?, last_offer_by='driver' WHERE id=?", (message.from_user.id, round_n, order_id))
+        await db.commit()
+    if round_n >= MAX_NEGOTIATION_ROUNDS:
+        await message.answer("⚠️ Максимум 3 раунда. Если клиент не согласен — заказ отменится.")
+    else:
+        await message.answer("📤 Ваша цена " + str(offer) + " сомони отправлена клиенту. Ожидайте ответа.")
+    ckb = InlineKeyboardBuilder()
+    ckb.button(text="✅ Согласен — " + str(offer) + " сомони", callback_data="client_accept:" + str(order_id) + ":" + str(offer))
+    ckb.button(text="💰 Предложить свою", callback_data="client_counter:" + str(order_id))
+    ckb.adjust(1)
+    text = ("🚗 Водитель предлагает: " + str(offer) + " сомони\n\n"
+            "Вы предлагали: " + str(row[1]) + " сомони\n"
+            "Раунд: " + str(round_n) + "/" + str(MAX_NEGOTIATION_ROUNDS) + "\n\n"
+            "Согласны?")
+    try:
+        await message.bot.send_message(client_id, text, reply_markup=ckb.as_markup())
+    except Exception:
+        pass
+
+@router.callback_query(F.data.startswith("client_accept:"))
+async def client_accept(call: CallbackQuery):
+    parts = call.data.split(":")
+    order_id = int(parts[1])
+    offer = int(parts[2])
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT client_id, driver_id, status FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+        if not row or row[2] != "negotiating":
+            await call.answer("Заказ уже закрыт", show_alert=True)
+            return
+        client_id = row[0]
+        driver_id = row[1]
+        await db.execute("UPDATE orders SET price=?, status='accepted' WHERE id=?", (offer, order_id))
+        await db.commit()
+    try:
+        await call.message.edit_text("✅ Договорились! Цена: " + str(offer) + " сомони")
+    except Exception:
+        pass
+    await finalize_accept(call.bot, order_id, driver_id, client_id, offer)
+
+@router.callback_query(F.data.startswith("client_counter:"))
+async def client_counter(call: CallbackQuery, state: FSMContext):
+    order_id = int(call.data.split(":")[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT negotiation_round, status FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+    if not row or row[1] != "negotiating":
+        await call.answer("Заказ закрыт", show_alert=True)
+        return
+    if row[0] >= MAX_NEGOTIATION_ROUNDS:
+        await call.answer("Максимум раундов", show_alert=True)
+        return
+    await state.set_state(OrderFlow.client_offer)
+    await state.update_data(counter_order_id=order_id)
+    await call.message.answer("📝 Введите свою цену в сомони:")
+    await call.answer()
+
+@router.message(OrderFlow.client_offer, F.text)
+async def client_counter_save(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("counter_order_id") or data.get("order_id")
+    if not order_id:
+        await message.answer("⚠️ Ошибка. Начните заново.")
+        await state.clear()
+        return
+    try:
+        offer = int((message.text or "").strip())
+        if offer < 1:
+            raise ValueError
+    except Exception:
+        await message.answer("⚠️ Введите целое число.")
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT driver_id, recommended_price, negotiation_round, status FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+        if not row or row[3] != "negotiating":
+            await message.answer("⚠️ Заказ недоступен.")
+            await state.clear()
+            return
+        driver_id = row[0]
+        recommended = row[1]
+        round_n = row[2] + 1
+        minimum = min_price_for(recommended)
+        if offer < minimum:
+            await message.answer("⚠️ Слишком низкая цена. Введите больше.")
+            return
+        await db.execute("UPDATE orders SET price=?, negotiation_round=?, last_offer_by='client' WHERE id=?", (offer, round_n, order_id))
+        await db.commit()
+    await state.clear()
+    dkb = InlineKeyboardBuilder()
+    dkb.button(text="✅ Принять — " + str(offer) + " сомони", callback_data="accept:" + str(order_id))
+    dkb.button(text="💰 Предложить свою", callback_data="driver_offer:" + str(order_id))
+    dkb.adjust(1)
+    text = ("💸 Клиент предлагает: " + str(offer) + " сомони\n\n"
+            "Раунд: " + str(round_n) + "/" + str(MAX_NEGOTIATION_ROUNDS))
+    try:
+        await message.bot.send_message(driver_id, text, reply_markup=dkb.as_markup())
+    except Exception:
+        pass
+    await message.answer("📤 Ваша цена отправлена водителю.")
+
 @router.callback_query(F.data.startswith("accept:"))
 async def accept_order(call: CallbackQuery):
     order_id = int(call.data.split(":")[1])
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT status, client_id, price, from_lat, from_lon, to_lat, to_lon, payment FROM orders WHERE id=?", (order_id,))
+        cur = await db.execute("SELECT status, client_id, price, from_lat, from_lon, to_lat, to_lon, payment, negotiation_round, last_offer_by, recommended_price FROM orders WHERE id=?", (order_id,))
         row = await cur.fetchone()
         if not row:
             await call.answer("Не найден", show_alert=True)
             return
-        status, client_id, price, flat, flon, tlat, tlon, payment = row
-        if status not in ("pending", "scheduled"):
+        status = row[0]
+        client_id = row[1]
+        price = row[2]
+        if status not in ("pending", "scheduled", "negotiating"):
             await call.answer("Уже занят", show_alert=True)
+            return
+        if status == "negotiating" and row[9] == "driver":
+            await call.answer("Ждём ответа клиента", show_alert=True)
             return
         await db.execute("UPDATE orders SET driver_id=?, status='accepted' WHERE id=?", (call.from_user.id, order_id))
         await db.commit()
-    pay_text = "💵 Наличные" if payment == "cash" else "💳 Картой"
+    await finalize_accept(call.bot, order_id, call.from_user.id, client_id, price)
+
+async def finalize_accept(bot: Bot, order_id: int, driver_id: int, client_id: int, price: int):
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT car_brand, car_plate, car_class, driver_lat, driver_lon, phone, first_name, last_name, car_photo, self_photo FROM users WHERE user_id=?", (call.from_user.id,))
+        cur = await db.execute("SELECT from_lat, from_lon, to_lat, to_lon, payment, comment FROM orders WHERE id=?", (order_id,))
+        orow = await cur.fetchone()
+        cur = await db.execute("SELECT car_brand, car_plate, car_class, driver_lat, driver_lon, phone, first_name, last_name, car_photo, self_photo, call_phone FROM users WHERE user_id=?", (driver_id,))
         drow = await cur.fetchone()
-        cur = await db.execute("SELECT phone, first_name, last_name FROM users WHERE user_id=?", (client_id,))
+        cur = await db.execute("SELECT phone, first_name, last_name, call_phone FROM users WHERE user_id=?", (client_id,))
         crow = await cur.fetchone()
+    flat, flon, tlat, tlon = orow[0], orow[1], orow[2], orow[3]
+    payment = orow[4]
+    comment = orow[5] or ""
     car_brand = drow[0] if drow and drow[0] else "-"
     car_plate = drow[1] if drow and drow[1] else "-"
     car_class = drow[2] if drow and drow[2] else "-"
     driver_phone = drow[5] if drow else "-"
     driver_name = ((drow[6] or "") + " " + (drow[7] or "")).strip() if drow else "Водитель"
     driver_self_photo = drow[9] if drow else None
+    driver_call_phone = drow[10] if drow and drow[10] else "—"
     client_phone = crow[0] if crow else "-"
     client_name = ((crow[1] or "") + " " + (crow[2] or "")).strip() if crow else "Клиент"
+    client_call_phone = crow[3] if crow and crow[3] else "—"
     dlat = drow[3] if drow else None
     dlon = drow[4] if drow else None
-    if dlat and dlon:
-        eta_driver = estimate_minutes(haversine(dlat, dlon, flat, flon))
-    else:
-        eta_driver = None
+    eta_driver = estimate_minutes(haversine(dlat, dlon, flat, flon)) if dlat and dlon else None
     eta_ride = estimate_minutes(haversine(flat, flon, tlat, tlon))
     eta_driver_text = str(eta_driver) + " мин" if eta_driver else "-"
     eta_ride_text = str(eta_ride) + " мин" if eta_ride else "-"
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT referred_by, ref_activated FROM users WHERE user_id=?", (call.from_user.id,))
-        ref_row = await cur.fetchone()
-        if ref_row and ref_row[0] and not ref_row[1]:
-            referrer_id = ref_row[0]
-            await db.execute("UPDATE users SET ref_activated=1 WHERE user_id=?", (call.from_user.id,))
-            cur = await db.execute("SELECT COUNT(*) FROM users WHERE referred_by=? AND ref_activated=1", (referrer_id,))
-            cnt = (await cur.fetchone())[0]
-            if cnt >= REF_TARGET and cnt % REF_TARGET == 0:
-                await give_subscription(referrer_id, days=REF_BONUS_DAYS)
-                try:
-                    await call.bot.send_message(referrer_id, "🎉 Бонус! +" + str(REF_BONUS_DAYS) + " дня подписки!")
-                except Exception:
-                    pass
-            await db.commit()
-    await call.message.edit_text("✅ Вы приняли заказ #" + str(order_id) + "\n\n💰 " + str(price) + " сомони\n💳 " + pay_text + "\n\n⏱️ До клиента: " + eta_driver_text + "\n⏳ Поездка: " + eta_ride_text + "\n\n👤 " + client_name + "\n📞 " + str(client_phone))
-    await call.bot.send_location(call.from_user.id, latitude=flat, longitude=flon)
-    await call.bot.send_message(call.from_user.id, "🚕 Маршрут к клиенту (точка A):\n" + nav_link(dlat if dlat else flat, dlon if dlon else flon, flat, flon))
+    pay_text = "💵 Наличные" if payment == "cash" else "💳 Картой"
+    comment_text = "\n💬 " + comment if comment else ""
+    await log_action(driver_id, "accept_order", "id=" + str(order_id) + " price=" + str(price))
+    try:
+        await bot.send_message(driver_id, "✅ Вы приняли заказ #" + str(order_id) + "\n\n💰 " + str(price) + " сомони\n💳 " + pay_text + "\n\n⏱️ До клиента: " + eta_driver_text + "\n⏳ Поездка: " + eta_ride_text + "\n\n👤 " + client_name + "\n📱 Telegram: " + str(client_phone) + "\n📞 Звонок: " + str(client_call_phone) + comment_text)
+    except Exception:
+        pass
+    try:
+        await bot.send_location(driver_id, latitude=flat, longitude=flon)
+        await bot.send_message(driver_id, "🚕 Маршрут к клиенту (точка A):\n" + nav_link(dlat if dlat else flat, dlon if dlon else flon, flat, flon))
+    except Exception:
+        pass
     dkb = InlineKeyboardBuilder()
     dkb.button(text="🚗 Я выехал", callback_data="drv_status:on_way:" + str(order_id))
     dkb.button(text="📍 Я рядом", callback_data="drv_status:near:" + str(order_id))
     dkb.button(text="✅ Я приехал (взял клиента)", callback_data="drv_status:picked:" + str(order_id))
+    dkb.button(text="📡 Включить Live-локацию", callback_data="live_loc:" + str(order_id))
     dkb.button(text="💬 Чат с клиентом", callback_data="chat_start:" + str(order_id))
     dkb.button(text="✅ Завершить поездку", callback_data="finish:" + str(order_id))
     dkb.adjust(1)
-    await call.bot.send_message(call.from_user.id, "🎛 Управление поездкой:", reply_markup=dkb.as_markup())
+    try:
+        await bot.send_message(driver_id, "🎛 Управление поездкой:", reply_markup=dkb.as_markup())
+    except Exception:
+        pass
     ckb = InlineKeyboardBuilder()
     ckb.button(text="💬 Чат с водителем", callback_data="chat_start:" + str(order_id))
     ckb.button(text="📍 Где водитель", callback_data="where_driver:" + str(order_id))
     ckb.adjust(1)
-    if driver_self_photo:
-        try:
-            await call.bot.send_photo(client_id, photo=driver_self_photo, caption="🚗 Водитель принял заказ #" + str(order_id) + "\n\n👤 " + driver_name + "\n📞 " + str(driver_phone) + "\n\n🚙 " + car_brand + " " + car_plate + " (" + car_class + ")\n\n💰 " + str(price) + " сомони\n💳 " + pay_text + "\n\n⏱️ Подъедет через: " + eta_driver_text + "\n⏳ Поездка: " + eta_ride_text)
-        except Exception:
-            await call.bot.send_message(client_id, "🚗 Водитель принял заказ #" + str(order_id) + "\n\n👤 " + driver_name + "\n📞 " + str(driver_phone) + "\n\n🚙 " + car_brand + " " + car_plate + " (" + car_class + ")\n\n💰 " + str(price) + " сомони\n💳 " + pay_text + "\n\n⏱️ Подъедет через: " + eta_driver_text)
-    else:
-        await call.bot.send_message(client_id, "🚗 Водитель принял заказ #" + str(order_id) + "\n\n👤 " + driver_name + "\n📞 " + str(driver_phone) + "\n\n🚙 " + car_brand + " " + car_plate + " (" + car_class + ")\n\n💰 " + str(price) + " сомони\n💳 " + pay_text + "\n\n⏱️ Подъедет через: " + eta_driver_text)
-    await call.bot.send_message(client_id, "🎛 Действия:", reply_markup=ckb.as_markup())
-    await call.answer("Заказ принят")
+    caption = ("🚗 Водитель принял заказ #" + str(order_id) + "\n\n"
+               "👤 " + driver_name + "\n"
+               "📱 Telegram: " + str(driver_phone) + "\n"
+               "📞 Звонок: " + str(d]
+river_call_phone) + "\n\n"
+               "🚙 " + car_b   rand + " " + car_plate + " (" + car_class + ")\n\n"
+               "💰 " + str(price) + " сомони\n"
+               "💳 " + pay_text + "\n\n"
+               "⏱️ Подъедет через: " + eta_driver_text + "\n"
+               "⏳ Поездка: " + eta_ride_text + comment_text)
+    try:
+        if driver_self_photo:
+            await bot.send_photo(client_id, photo=driver_self_photo, caption=caption)
+        else:
+            await bot.send_message(client_id, caption)
+    except Exception:
+        await bot.send_message(client_id, caption)
+    try:
+        await bot.send_message(client_id, "🎛 Действия:", reply_markup=ckb.as_markup())
+    except Exception:
+        pass
 
 @router.callback_query(F.data.startswith("drv_status:"))
 async def drv_status(call: CallbackQuery):
@@ -932,8 +1235,7 @@ async def drv_status(call: CallbackQuery):
         await call.answer("Не активен", show_alert=True)
         return
     client_id = row[0]
-    tlat = row[2]
-    tlon = row[3]
+    tlat = row[2 tlon = row[3]
     texts = {
         "on_way": "🚗 Водитель выехал к вам!",
         "near": "📍 Водитель уже рядом!",
@@ -962,6 +1264,27 @@ async def drv_status(call: CallbackQuery):
             pass
     await call.answer("Отправлено клиенту")
 
+@router.callback_query(F.data.startswith("live_loc:"))
+async def live_loc(call: CallbackQuery):
+    order_id = int(call.data.split(":")[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT client_id FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+    if not row:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+    client_id = row[0]
+    await call.message.answer("📡 <b>Как включить Live-локацию:</b>\n\n"
+                              "1. Нажмите на скрепку 📎 внизу\n"
+                              "2. Выберите «Геопозиция»\n"
+                              "3. Нажмите «Транслировать 1 час»\n\n"
+                              "Клиент увидит вашу движущуюся метку на карте.", parse_mode="HTML")
+    try:
+        await call.bot.send_message(client_id, "📡 Водитель включает трансляцию геопозиции.\n\nСледите за ним в чате с ботом.")
+    except Exception:
+        pass
+    await call.answer("Инструкция отправлена")
+
 @router.callback_query(F.data.startswith("where_driver:"))
 async def where_driver(call: CallbackQuery):
     order_id = int(call.data.split(":")[1])
@@ -969,7 +1292,7 @@ async def where_driver(call: CallbackQuery):
         cur = await db.execute("SELECT driver_id, status FROM orders WHERE id=?", (order_id,))
         row = await cur.fetchone()
         if not row or row[1] not in ("accepted", "arrived", "started"):
-            await call.answer("Не активен", show_alert=True)
+            await call.answer("Заказ не активен", show_alert=True)
             return
         driver_id = row[0]
     async with aiosqlite.connect(DB_PATH) as db:
@@ -980,7 +1303,6 @@ async def where_driver(call: CallbackQuery):
         await call.answer("Локация отправлена")
     else:
         await call.answer("Водитель не отправил локацию", show_alert=True)
-
 @router.callback_query(F.data.startswith("chat_start:"))
 async def chat_start(call: CallbackQuery, state: FSMContext):
     order_id = int(call.data.split(":")[1])
@@ -1000,7 +1322,7 @@ async def chat_start(call: CallbackQuery, state: FSMContext):
         return
     await state.set_state(ChatMode.chatting)
     await state.update_data(order_id=order_id, partner_id=partner_id)
-    await call.message.answer("💬 Чат открыт. Пишите сообщения.\n\nДля выхода нажмите Выйти из чата.", reply_markup=chat_kb())
+    await call.message.answer("💬 Чат открыт.\n\nМожно писать текст, отправлять фото, голосовые и геолокацию.\n\nДля выхода нажмите «❌ Выйти из чата».", reply_markup=chat_kb())
     await call.answer()
 
 @router.message(ChatMode.chatting, F.text == "❌ Выйти из чата")
@@ -1022,6 +1344,33 @@ async def chat_location(message: Message, state: FSMContext):
     except Exception:
         pass
 
+@router.message(ChatMode.chatting, F.photo)
+async def chat_photo(message: Message, state: FSMContext):
+    data = await state.get_data()
+    partner_id = data.get("partner_id")
+    if not partner_id:
+        await state.clear()
+        return
+    photo_id = message.photo[-1].file_id
+    caption = message.caption or ""
+    try:
+        await message.bot.send_photo(partner_id, photo=photo_id, caption="📸 " + caption if caption else "📸 Фото")
+    except Exception:
+        pass
+
+@router.message(ChatMode.chatting, F.voice)
+async def chat_voice(message: Message, state: FSMContext):
+    data = await state.get_data()
+    partner_id = data.get("partner_id")
+    if not partner_id:
+        await state.clear()
+        return
+    try:
+        await message.bot.send_message(partner_id, "🎤 Голосовое сообщение:")
+        await message.bot.send_voice(partner_id, voice=message.voice.file_id)
+    except Exception:
+        pass
+
 @router.message(ChatMode.chatting, F.text)
 async def chat_send(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -1036,7 +1385,7 @@ async def chat_send(message: Message, state: FSMContext):
     role = row[2] if row else ""
     role_text = "🚗 Водитель" if role == "driver" else "🚕 Клиент"
     try:
-        await message.bot.send_message(partner_id, role_text + " - " + name + ":\n\n" + message.text)
+        await message.bot.send_message(partner_id, role_text + " — " + name + ":\n\n" + message.text)
         await message.answer("✅ Отправлено", reply_markup=chat_kb())
     except Exception:
         await message.answer("⚠️ Не доставлено", reply_markup=chat_kb())
@@ -1047,12 +1396,13 @@ async def client_cancel(call: CallbackQuery):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT status, driver_id FROM orders WHERE id=?", (order_id,))
         row = await cur.fetchone()
-        if not row or row[0] not in ("pending", "scheduled", "accepted", "arrived", "started"):
-            await call.answer("Нельзя", show_alert=True)
+        if not row or row[0] not in ("pending", "scheduled", "negotiating", "accepted", "arrived", "started"):
+            await call.answer("Нельзя отменить", show_alert=True)
             return
         status, driver_id = row
         await db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (order_id,))
         await db.commit()
+    await log_action(call.from_user.id, "client_cancel", "id=" + str(order_id))
     await call.message.edit_text("❌ Заказ отменён.")
     if driver_id:
         try:
@@ -1077,12 +1427,16 @@ async def finish_ride(call: CallbackQuery):
         await db.execute("UPDATE orders SET status='finished' WHERE id=?", (order_id,))
         await db.execute("UPDATE users SET rides=rides+1, total_rides=COALESCE(total_rides,0)+1 WHERE user_id=?", (driver_id,))
         await db.commit()
+    await log_action(driver_id, "finish_ride", "id=" + str(order_id))
     await call.message.edit_text("✅ Поездка завершена.")
     builder = InlineKeyboardBuilder()
     for i in range(1, 6):
         builder.button(text="⭐" * i, callback_data="rate:" + str(order_id) + ":" + str(i))
     builder.adjust(5)
-    await call.bot.send_message(client_id, "🏁 Поездка #" + str(order_id) + " завершена!\n\nОцените водителя:", reply_markup=builder.as_markup())
+    try:
+        await call.bot.send_message(client_id, "🏁 Поездка #" + str(order_id) + " завершена!\n\nОцените водителя:", reply_markup=builder.as_markup())
+    except Exception:
+        pass
     await call.answer()
 
 @router.callback_query(F.data.startswith("rate:"))
@@ -1148,353 +1502,6 @@ async def my_orders(message: Message):
     text += "\n💰 Всего потрачено: " + str(total) + " сомони"
     await message.answer(text)
 
-@router.message(F.text.in_(["⚠️ Пожаловаться", "⚠️ Шикоят"]))
-async def complaint_start(message: Message, state: FSMContext):
-    await state.set_state(Complaint.text)
-    await message.answer("⚠️ Опишите проблему:", reply_markup=ReplyKeyboardRemove())
-
-@router.message(Complaint.text)
-async def complaint_send(message: Message, state: FSMContext):
-    uid = message.from_user.id
-    text = message.text
-    lang = await get_lang(uid)
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT role, phone, first_name, last_name FROM users WHERE user_id=?", (uid,))
-        row = await cur.fetchone()
-        role = row[0] if row and row[0] else "?"
-        phone = row[1] if row and row[1] else "-"
-        name = ((row[2] or "") + " " + (row[3] or "")).strip() if row else "-"
-        cur = await db.execute("INSERT INTO complaints(from_id, from_role, text) VALUES(?,?,?)", (uid, role, text))
-        cid = cur.lastrowid
-        await db.commit()
-    await state.clear()
-    if ADMIN_ID:
-        try:
-            b = InlineKeyboardBuilder()
-            b.button(text="✉️ Ответить", callback_data="reply_compl:" + str(cid))
-            b.adjust(1)
-            await message.bot.send_message(ADMIN_ID, "⚠️ Жалоба #" + str(cid) + "\n\n" + name + "\n📱 " + str(phone) + "\n🎭 " + role + "\n🆔 " + str(uid) + "\n\n📝 " + text, reply_markup=b.as_markup())
-        except Exception:
-            pass
-    await message.answer("✅ Отправлено.", reply_markup=main_menu(lang))
-
-@router.callback_query(F.data.startswith("reply_compl:"))
-async def admin_reply_start(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        await call.answer("Только админ", show_alert=True)
-        return
-    cid = int(call.data.split(":")[1])
-    await state.update_data(complaint_id=cid)
-    await state.set_state(AdminReply.waiting)
-    await call.message.answer("✍️ Ответ:")
-    await call.answer()
-
-@router.message(AdminReply.waiting)
-async def admin_reply_send(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    data = await state.get_data()
-    cid = data.get("complaint_id")
-    if not cid:
-        await state.clear()
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT from_id FROM complaints WHERE id=?", (cid,))
-        row = await cur.fetchone()
-        if not row:
-            await message.answer("Не найдена")
-            await state.clear()
-            return
-        uid = row[0]
-        await db.execute("UPDATE complaints SET answer=?, status='answered' WHERE id=?", (message.text, cid))
-        await db.commit()
-    try:
-        await message.bot.send_message(uid, "✉️ Ответ на жалобу #" + str(cid) + "\n\n" + message.text)
-        await message.answer("✅ Отправлено.")
-    except Exception:
-        await message.answer("⚠️ Не доставлено.")
-    await state.clear()
-
-@router.message(Command("admin"))
-async def admin_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    lang = await get_lang(message.from_user.id)
-    await message.answer("👑 Админ-панель", reply_markup=admin_menu(lang))
-
-@router.message(F.text.in_(["🔙 Выйти", "🔙 Баромад"]))
-async def admin_exit(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    lang = await get_lang(message.from_user.id)
-    await message.answer("Выход.", reply_markup=main_menu(lang))
-
-@router.message(F.text.in_(["📊 Статистика", "📊 Омор"]))
-async def admin_stats(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT COUNT(*) FROM users WHERE role='client'")
-        clients = (await cur.fetchone())[0]
-        cur = await db.execute("SELECT COUNT(*) FROM users WHERE role='driver'")
-        drivers = (await cur.fetchone())[0]
-        cur = await db.execute("SELECT COUNT(*) FROM orders")
-        total = (await cur.fetchone())[0]
-        cur = await db.execute("SELECT COUNT(*) FROM orders WHERE status='finished'")
-        fin = (await cur.fetchone())[0]
-        cur = await db.execute("SELECT COUNT(*) FROM orders WHERE status='cancelled'")
-        can = (await cur.fetchone())[0]
-        cur = await db.execute("SELECT SUM(price) FROM orders WHERE status='finished'")
-        rev = (await cur.fetchone())[0] or 0
-        cur = await db.execute("SELECT COUNT(*) FROM complaints WHERE status='new'")
-        comp = (await cur.fetchone())[0]
-    text = "📊 Статистика\n\n👤 Клиентов: " + str(clients) + "\n🚗 Водителей: " + str(drivers) + "\n📦 Заказов: " + str(total) + "\n✅ Завершено: " + str(fin) + "\n❌ Отменено: " + str(can) + "\n💰 Оборот: " + str(rev) + " сомони\n💵 Комиссия 10%: " + str(int(rev * 0.1)) + " сомони\n⚠️ Новых жалоб: " + str(comp)
-    await message.answer(text)
-
-@router.message(F.text.in_(["🚗 Водители", "🚗 Ронандагон"]))
-async def admin_drivers(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT user_id, phone, first_name, last_name, online, rating, rides, car_brand, car_plate, car_class, approved, rejected FROM users WHERE role='driver' ORDER BY rides DESC LIMIT 20")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("Водителей нет.")
-        return
-    text = "🚗 Водители\n\n"
-    for uid, phone, fn, ln, online, rating, rides, brand, plate, cls, approved, rejected in rows:
-        on = "🟢" if online else "⚪"
-        name = ((fn or "") + " " + (ln or "")).strip()
-        status = "✅" if approved else ("❌" if rejected else "⏳")
-        text += on + " [" + status + "] " + name + "\n📞 " + str(phone) + "\n🚙 " + str(brand or "-") + " " + str(plate or "-") + " (" + str(cls or "-") + ")\n⭐ " + str(round(rating, 1)) + " | 🚕 " + str(rides) + "\n\n"
-    await message.answer(text)
-
-@router.message(F.text.in_(["👤 Клиенты", "👤 Мизоҷон"]))
-async def admin_clients(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT user_id, phone, first_name, last_name FROM users WHERE role='client' ORDER BY created_at DESC LIMIT 30")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("Клиентов нет.")
-        return
-    text = "👤 Клиенты\n\n"
-    for uid, phone, fn, ln in rows:
-        name = ((fn or "") + " " + (ln or "")).strip() or "-"
-        text += name + " - " + str(phone) + "\n"
-    await message.answer(text)
-
-@router.message(F.text.in_(["📦 Заказы", "📦 Фармоишҳо"]))
-async def admin_orders(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT id, client_id, driver_id, price, status FROM orders ORDER BY id DESC LIMIT 20")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("Заказов нет.")
-        return
-    text = "📦 Заказы\n\n"
-    for oid, cid, did, price, status in rows:
-        text += "#" + str(oid) + " " + str(price) + " сомони " + status + " К:" + str(cid) + " В:" + str(did or "-") + "\n"
-    await message.answer(text)
-
-@router.message(F.text.in_(["⚠️ Жалобы", "⚠️ Шикоятҳо"]))
-async def admin_complaints(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT id, from_id, from_role, text FROM complaints WHERE status='new' ORDER BY id DESC LIMIT 10")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("✅ Жалоб нет.")
-        return
-    for cid, fid, role, text in rows:
-        b = InlineKeyboardBuilder()
-        b.button(text="✉️ Ответить", callback_data="reply_compl:" + str(cid))
-        b.adjust(1)
-        await message.answer("⚠️ Жалоба #" + str(cid) + " от " + str(fid) + " (" + role + "):\n\n" + text, reply_markup=b.as_markup())
-
-@router.message(F.text.in_(["💳 Заявки", "💳 Дархостҳо"]))
-async def admin_sub_requests(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT id, driver_id FROM sub_requests WHERE status='pending' ORDER BY id DESC")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("✅ Заявок нет.")
-        return
-    for _, driver_id in rows:
-        b = InlineKeyboardBuilder()
-        b.button(text="✅ Подтвердить", callback_data="sub_ok:" + str(driver_id))
-        b.button(text="❌ Отклонить", callback_data="sub_no:" + str(driver_id))
-        b.adjust(2)
-        await message.answer("💳 Заявка от " + str(driver_id), reply_markup=b.as_markup())
-
-@router.message(F.text.in_(["🎁 Промокоды", "🎁 Промокодҳо"]))
-async def admin_promos(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT code, discount, uses, max_uses, active FROM promos ORDER BY id DESC LIMIT 10")
-        rows = await cur.fetchall()
-    text = "🎁 Промокоды\n\n"
-    if not rows:
-        text += "Нет промокодов.\n"
-    else:
-        for code, disc, uses, mx, act in rows:
-            text += ("✅" if act else "❌") + " " + code + " - " + str(disc) + "% (" + str(uses) + "/" + str(mx) + ")\n"
-    text += "\nСоздать: /newpromo"
-    await message.answer(text)
-
-@router.message(Command("newpromo"))
-async def new_promo(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await state.set_state(PromoCreate.code)
-    await message.answer("📝 Код промокода:")
-
-@router.message(PromoCreate.code)
-async def promo_set_code(message: Message, state: FSMContext):
-    code = (message.text or "").strip().upper()[:20]
-    if not code:
-        await message.answer("Введите код.")
-        return
-    await state.update_data(code=code)
-    await state.set_state(PromoCreate.discount)
-    await message.answer("💰 Скидка в % (1-99):")
-
-@router.message(PromoCreate.discount)
-async def promo_set_disc(message: Message, state: FSMContext):
-    try:
-        disc = int(message.text.strip())
-        if disc < 1 or disc > 99:
-            raise ValueError
-    except Exception:
-        await message.answer("Введите 1-99.")
-        return
-    data = await state.get_data()
-    async with aiosqlite.connect(DB_PATH) as db:
-        try:
-            await db.execute("INSERT INTO promos(code, discount) VALUES(?, ?)", (data["code"], disc))
-            await db.commit()
-            await message.answer("✅ Промокод " + data["code"] + " - " + str(disc) + "%")
-        except Exception:
-            await message.answer("⚠️ Уже существует.")
-    await state.clear()
-
-@router.message(F.text.in_(["⭐ Отзывы", "⭐ Шарҳҳо"]))
-async def admin_reviews(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT id, driver_id, rating, review FROM orders WHERE review != '' ORDER BY id DESC LIMIT 15")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("Отзывов пока нет.")
-        return
-    text = "⭐ Последние отзывы\n\n"
-    for oid, did, rating, review in rows:
-        text += "Заказ #" + str(oid) + " Водитель: " + str(did) + " ⭐" + str(rating) + "\n"
-        text += review[:150] + "\n\n"
-    await message.answer(text)
-
-@router.message(F.text.in_(["💰 Комиссии", "💰 Комиссияҳо"]))
-async def admin_commissions(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT driver_id, COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND driver_id IS NOT NULL GROUP BY driver_id ORDER BY SUM(price) DESC LIMIT 20")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("Нет завершённых заказов.")
-        return
-    text = "💰 Комиссии 10%\n\n"
-    total_comm = 0
-    for did, cnt, total in rows:
-        comm = int(total * 0.1)
-        total_comm += comm
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute("SELECT first_name, last_name FROM users WHERE user_id=?", (did,))
-            urow = await cur.fetchone()
-        name = ((urow[0] or "") + " " + (urow[1] or "")).strip() if urow else str(did)
-        text += name + ": " + str(cnt) + " поездок, " + str(comm) + " сомони\n"
-    text += "\n💰 Итого: " + str(total_comm) + " сомони"
-    await message.answer(text)
-
-@router.message(F.text.in_(["📈 Прогноз", "📈 Пешгӯӣ"]))
-async def admin_forecast(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    now = datetime.now()
-    day_ago = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-    week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND created_at >= ?", (day_ago,))
-        d1 = await cur.fetchone()
-        cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND created_at >= ?", (week_ago,))
-        d7 = await cur.fetchone()
-    per_day = d7[1] / 7 if d7[0] else 0
-    month = per_day * 30
-    text = "📈 Прогноз\n\nЗа сутки: " + str(d1[0]) + " заказов, " + str(d1[1]) + " сомони\nЗа 7 дней: " + str(d7[0]) + " заказов, " + str(d7[1]) + " сомони\n\n📊 Средний доход/день: " + str(round(per_day, 1)) + " сомони\nПрогноз на 30 дней: " + str(int(month)) + " сомони\n💵 Комиссия 10%: " + str(int(month * 0.1)) + " сомони"
-    await message.answer(text)
-
-@router.message(F.text.in_(["📢 Рассылка", "📢 Паём"]))
-async def broadcast_start(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await state.set_state(Broadcast.text)
-    await message.answer("📢 Напишите текст. Отмена: /cancel", reply_markup=ReplyKeyboardRemove())
-
-@router.message(Command("cancel"))
-async def cancel_broadcast(message: Message, state: FSMContext):
-    await state.clear()
-    lang = await get_lang(message.from_user.id)
-    await message.answer("Отменено.", reply_markup=admin_menu(lang))
-
-@router.message(Broadcast.text)
-async def broadcast_send(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    text = message.text
-    await state.clear()
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT user_id FROM users WHERE role IN ('client', 'driver')")
-        rows = await cur.fetchall()
-    sent = 0
-    for (uid,) in rows:
-        if uid == ADMIN_ID:
-            continue
-        try:
-            await message.bot.send_message(uid, "📢 Сообщение от администратора:\n\n" + text)
-            sent += 1
-            await asyncio.sleep(0.05)
-        except Exception:
-            pass
-    lang = await get_lang(message.from_user.id)
-    await message.answer("✅ Отправлено: " + str(sent), reply_markup=admin_menu(lang))
-
-@router.message(F.text.in_(["📥 Экспорт CSV", "📥 CSV содирот"]))
-async def admin_export(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT id, client_id, driver_id, price, status, tariff, distance, created_at FROM orders ORDER BY id DESC")
-        rows = await cur.fetchall()
-    if not rows:
-        await message.answer("Заказов нет.")
-        return
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["ID", "Client", "Driver", "Price", "Status", "Tariff", "Distance", "Date"])
-    for r in rows:
-        writer.writerow(r)
-    data = buf.getvalue().encode("utf-8-sig")
-    file = BufferedInputFile(data, filename="orders.csv")
-    await message.answer_document(file, caption="📥 Экспорт: " + str(len(rows)))
-
 @router.message(F.text.in_(["🎁 Приведи друга", "🎁 Дӯстро даъват кунед"]))
 async def ref_info(message: Message):
     uid = message.from_user.id
@@ -1505,7 +1512,8 @@ async def ref_info(message: Message):
     activated = row[1] if row else 0
     bot_info = await message.bot.get_me()
     ref_link = "https://t.me/" + bot_info.username + "?start=ref_" + str(uid)
-    text = "🎁 Приведи друга\n\nПригласите " + str(REF_TARGET) + " друзей и получите " + str(REF_BONUS_DAYS) + " дня подписки!\n\n📊 Приглашено: " + str(count) + "\n✅ Активировано: " + str(activated) + "\n\n🔗 " + ref_link
+    text = ("🎁 Приведи друга\n\nПригласите " + str(REF_TARGET) + " друзей и получите " + str(REF_BONUS_DAYS) + " дня подписки!\n\n"
+            "📊 Приглашено: " + str(count) + "\n✅ Активировано: " + str(activated) + "\n\n🔗 " + ref_link)
     await message.answer(text)
 
 @router.message(F.text.in_(["🚗 Моя машина", "🚗 Мошини ман"]))
@@ -1535,7 +1543,11 @@ async def my_earn(message: Message):
         row3 = await cur.fetchone()
         cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE driver_id=? AND status='finished'", (uid,))
         row4 = await cur.fetchone()
-    text = "💰 Мой заработок\n\nСегодня: " + str(row1[0]) + " поездок, " + str(row1[1]) + " сомони\n7 дней: " + str(row2[0]) + " поездок, " + str(row2[1]) + " сомони\n30 дней: " + str(row3[0]) + " поездок, " + str(row3[1]) + " сомони\nВсего: " + str(row4[0]) + " поездок, " + str(row4[1]) + " сомони"
+    text = ("💰 Мой заработок\n\n"
+            "Сегодня: " + str(row1[0]) + " поездок, " + str(row1[1]) + " сомони\n"
+            "7 дней: " + str(row2[0]) + " поездок, " + str(row2[1]) + " сомони\n"
+            "30 дней: " + str(row3[0]) + " поездок, " + str(row3[1]) + " сомони\n"
+            "Всего: " + str(row4[0]) + " поездок, " + str(row4[1]) + " сомони")
     await message.answer(text)
 
 @router.message(F.text.in_(["📊 График заработка", "📊 Графики даромад"]))
@@ -1559,7 +1571,17 @@ async def graph_earn(message: Message):
             cur = await db.execute("SELECT COUNT(*) FROM sub_requests WHERE status='approved'")
             subs = (await cur.fetchone())[0]
             sub_money = subs * SUB_PRICE
-        text = "📊 График заработка\n\n📅 Сегодня: " + str(d1[0]) + " заказов, " + str(d1[1]) + " сомони\n📅 7 дней: " + str(d7[0]) + " заказов, " + str(d7[1]) + " сомони\n📅 30 дней: " + str(d30[0]) + " заказов, " + str(d30[1]) + " сомони\n📅 365 дней: " + str(d365[0]) + " заказов, " + str(d365[1]) + " сомони\n\n💳 Подписок: " + str(subs) + "\n💰 С подписок: " + str(sub_money) + " сомони\n\n💵 Комиссия 10%:\nСегодня: " + str(int(d1[1] * 0.1)) + "\n7 дней: " + str(int(d7[1] * 0.1)) + "\n30 дней: " + str(int(d30[1] * 0.1)) + "\n\n🏆 Итого 30 дней: " + str(int(d30[1] * 0.1) + sub_money) + " сомони"
+        text = ("📊 График заработка\n\n"
+                "📅 Сегодня: " + str(d1[0]) + " заказов, " + str(d1[1]) + " сомони\n"
+                "📅 7 дней: " + str(d7[0]) + " заказов, " + str(d7[1]) + " сомони\n"
+                "📅 30 дней: " + str(d30[0]) + " заказов, " + str(d30[1]) + " сомони\n"
+                "📅 365 дней: " + str(d365[0]) + " заказов, " + str(d365[1]) + " сомони\n\n"
+                "💳 Подписок: " + str(subs) + "\n💰 С подписок: " + str(sub_money) + " сомони\n\n"
+                "💵 Комиссия 10%:\n"
+                "Сегодня: " + str(int(d1[1] * 0.1)) + "\n"
+                "7 дней: " + str(int(d7[1] * 0.1)) + "\n"
+                "30 дней: " + str(int(d30[1] * 0.1)) + "\n\n"
+                "🏆 Итого 30 дней: " + str(int(d30[1] * 0.1) + sub_money) + " сомони")
         await message.answer(text)
         return
     today = datetime.now().strftime("%Y-%m-%d")
@@ -1572,7 +1594,10 @@ async def graph_earn(message: Message):
         row2 = await cur.fetchone()
         cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE driver_id=? AND status='finished' AND DATE(created_at)>=?", (uid, month_ago))
         row3 = await cur.fetchone()
-    text = "📊 Мой график\n\nСегодня: " + str(row1[0]) + " поездок, " + str(row1[1]) + " сомони\n7 дней: " + str(row2[0]) + " поездок, " + str(row2[1]) + " сомони\n30 дней: " + str(row3[0]) + " поездок, " + str(row3[1]) + " сомони"
+    text = ("📊 Мой график\n\n"
+            "Сегодня: " + str(row1[0]) + " поездок, " + str(row1[1]) + " сомони\n"
+            "7 дней: " + str(row2[0]) + " поездок, " + str(row2[1]) + " сомони\n"
+            "30 дней: " + str(row3[0]) + " поездок, " + str(row3[1]) + " сомони")
     await message.answer(text)
 
 @router.message(F.text.in_(["📊 Моя статистика", "📊 Омори ман"]))
@@ -1589,7 +1614,11 @@ async def my_stats(message: Message):
     rating = row[0] or 5.0
     name = ((row[3] or "") + " " + (row[4] or "")).strip()
     car = str(row[5] or "-") + " " + str(row[6] or "-") + " (" + str(row[7] or "-") + ")"
-    text = "📊 Моя статистика\n\n👤 " + name + "\n🚗 " + car + "\n⭐ Рейтинг: " + str(round(rating, 2)) + "\n🚕 Всего поездок: " + str(row[2] or 0) + "\n⭐ Оценок: " + str(rrow[0])
+    text = ("📊 Моя статистика\n\n"
+            "👤 " + name + "\n🚗 " + car + "\n"
+            "⭐ Рейтинг: " + str(round(rating, 2)) + "\n"
+            "🚕 Всего поездок: " + str(row[2] or 0) + "\n"
+            "⭐ Оценок: " + str(rrow[0]))
     await message.answer(text)
 
 @router.message(F.text.in_(["🏆 Топ водителей", "🏆 Беҳтарин ронандагон"]))
@@ -1608,7 +1637,7 @@ async def top_drivers(message: Message):
             cur = await db.execute("SELECT first_name, last_name FROM users WHERE user_id=?", (did,))
             urow = await cur.fetchone()
         name = ((urow[0] or "") + " " + (urow[1] or "")).strip() if urow else str(did)
-        text += str(i) + ". " + name + " - " + str(cnt) + " поездок, " + str(total) + " сомони\n"
+        text += str(i) + ". " + name + " — " + str(cnt) + " поездок, " + str(total) + " сомони\n"
         i += 1
     await message.answer(text)
 
@@ -1680,7 +1709,7 @@ async def replay_tariff(call: CallbackQuery, state: FSMContext):
     key = call.data.split(":")[1]
     data = await state.get_data()
     price = int(TARIFFS[key]["base"] + TARIFFS[key]["rate"] * data["distance"])
-    await state.update_data(tariff=key, price=price)
+    await state.update_data(tariff=key, price=price, recommended_price=price)
     builder = InlineKeyboardBuilder()
     builder.button(text="💵 Наличные", callback_data="pay:cash")
     builder.button(text="💳 Картой", callback_data="pay:card")
@@ -1694,8 +1723,11 @@ async def go_online(message: Message, state: FSMContext):
     uid = message.from_user.id
     lang = await get_lang(uid)
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT approved, rejected FROM users WHERE user_id=?", (uid,))
+        cur = await db.execute("SELECT approved, rejected, banned FROM users WHERE user_id=?", (uid,))
         arow = await cur.fetchone()
+    if arow and arow[2]:
+        await message.answer("🚫 Вы заблокированы.")
+        return
     if arow and arow[1]:
         await message.answer(tr(lang, "rejected"))
         return
@@ -1778,17 +1810,19 @@ async def drv_self_photo(message: Message, state: FSMContext):
     car_photo = data.get("car_photo", "")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET car_brand=?, car_plate=?, car_class=?, car_photo=?, self_photo=?, approved=0, rejected=0 WHERE user_id=?", (car_brand, car_plate, car_class, car_photo, photo_id, uid))
-        cur = await db.execute("SELECT phone, first_name, last_name FROM users WHERE user_id=?", (uid,))
+        cur = await db.execute("SELECT phone, first_name, last_name, call_phone FROM users WHERE user_id=?", (uid,))
         row = await cur.fetchone()
         await db.commit()
     await state.clear()
     lang = await get_lang(uid)
     phone = row[0] if row else "-"
     name = ((row[1] or "") + " " + (row[2] or "")).strip() if row else "-"
+    call_phone = row[3] if row and row[3] else "—"
+    await log_action(uid, "driver_registration", car_brand + " " + car_plate)
     await message.answer("✅ Данные отправлены админу.\n\n⏳ Ожидайте одобрения.", reply_markup=driver_menu(lang))
     if ADMIN_ID:
         try:
-            text = "🆕 НОВЫЙ ВОДИТЕЛЬ\n\n👤 " + name + "\n📱 " + str(phone) + "\n🆔 " + str(uid) + "\n\n🚗 " + car_brand + " " + car_plate + "\n🎯 " + car_class
+            text = ("🆕 НОВЫЙ ВОДИТЕЛЬ\n\n👤 " + name + "\n📱 Telegram: " + str(phone) + "\n📞 Звонок: " + str(call_phone) + "\n🆔 " + str(uid) + "\n\n🚗 " + car_brand + " " + car_plate + "\n🎯 " + car_class)
             b = InlineKeyboardBuilder()
             b.button(text="✅ Принять", callback_data="drv_ok:" + str(uid))
             b.button(text="❌ Отклонить", callback_data="drv_no:" + str(uid))
@@ -1813,6 +1847,7 @@ async def drv_location(message: Message, state: FSMContext):
         await db.commit()
     await state.clear()
     lang = await get_lang(message.from_user.id)
+    await log_action(message.from_user.id, "driver_online")
     await message.answer("🟢 Вы на линии.", reply_markup=driver_menu(lang))
 
 @router.message(DriverReg.location)
@@ -1824,12 +1859,11 @@ async def go_offline(message: Message):
     uid = message.from_user.id
     await set_online(uid, 0)
     lang = await get_lang(uid)
+    await log_action(uid, "driver_offline")
     await message.answer("🔴 Вы ушли с линии.", reply_markup=driver_menu(lang))
-
 @router.message(F.text.in_(["💳 Подписка", "💳 Обуна"]))
 async def sub_info(message: Message):
     uid = message.from_user.id
-    lang = await get_lang(uid)
     sub_ok = await has_subscription(uid)
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT sub_until FROM users WHERE user_id=?", (uid,))
@@ -1854,8 +1888,15 @@ async def sub_pay(call: CallbackQuery, state: FSMContext):
             return
         await db.execute("INSERT INTO sub_requests(driver_id) VALUES(?)", (uid,))
         await db.commit()
-    text = "💳 Оплата подписки\n\n💰 20 сомони\n\nРеквизиты:\n1. DC-банк        013585959\n2. ESKHATA-банк   013585959\n3. ALIF-банк      013585959\n4. SPITAMEN-банк  013585959\n\n1️⃣ Переведите 20 сомони\n2️⃣ Отправьте скриншот чека (фото)"
+    text = ("💳 Оплата подписки\n\n💰 20 сомони\n\nРеквизиты:\n"
+            "1. DC-банк        013585959\n"
+            "2. ESKHATA-банк   013585959\n"
+            "3. ALIF-банк      013585959\n"
+            "4. SPITAMEN-банк  013585959\n\n"
+            "1️⃣ Переведите 20 сомони на любую карту\n"
+            "2️⃣ Отправьте скриншот чека (фото)")
     await call.message.edit_text(text)
+    await log_action(uid, "sub_request")
     if ADMIN_ID:
         try:
             builder = InlineKeyboardBuilder()
@@ -1873,6 +1914,7 @@ async def sub_receipt_photo(message: Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
     await state.clear()
     lang = await get_lang(uid)
+    await log_action(uid, "sub_receipt")
     if ADMIN_ID:
         try:
             builder = InlineKeyboardBuilder()
@@ -1898,6 +1940,7 @@ async def sub_confirm(call: CallbackQuery):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE sub_requests SET status='approved' WHERE driver_id=? AND status='pending'", (uid,))
         await db.commit()
+    await log_action(uid, "sub_approved")
     try:
         await call.bot.send_message(uid, "✅ Подписка активирована!\n📅 До: " + until.strftime("%d.%m.%Y %H:%M"))
     except Exception:
@@ -1920,6 +1963,7 @@ async def sub_reject(call: CallbackQuery):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE sub_requests SET status='rejected' WHERE driver_id=? AND status='pending'", (uid,))
         await db.commit()
+    await log_action(uid, "sub_rejected")
     try:
         await call.bot.send_message(uid, "❌ Заявка отклонена.")
     except Exception:
@@ -1942,6 +1986,7 @@ async def driver_approve(call: CallbackQuery):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET approved=1, rejected=0 WHERE user_id=?", (uid,))
         await db.commit()
+    await log_action(uid, "driver_approved")
     lang = await get_lang(uid)
     try:
         await call.bot.send_message(uid, "🎉 " + ("Вас приняли на работу!" if lang == "ru" else "Шуморо ба кор қабул карданд!") + "\n\n💳 Оформите подписку\n🟢 Нажмите Я на линии")
@@ -1965,6 +2010,7 @@ async def driver_reject(call: CallbackQuery):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET approved=0, rejected=1 WHERE user_id=?", (uid,))
         await db.commit()
+    await log_action(uid, "driver_rejected")
     try:
         await call.bot.send_message(uid, "❌ Заявка отклонена.")
     except Exception:
@@ -1977,6 +2023,483 @@ async def driver_reject(call: CallbackQuery):
     except Exception:
         pass
     await call.answer("Отклонён")
+
+@router.message(F.text.in_(["⚠️ Пожаловаться", "⚠️ Шикоят"]))
+async def complaint_start(message: Message, state: FSMContext):
+    await state.set_state(Complaint.text)
+    await message.answer("⚠️ Опишите проблему:", reply_markup=ReplyKeyboardRemove())
+
+@router.message(Complaint.text)
+async def complaint_send(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    text = message.text
+    lang = await get_lang(uid)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT role, phone, first_name, last_name FROM users WHERE user_id=?", (uid,))
+        row = await cur.fetchone()
+        role = row[0] if row and row[0] else "?"
+        phone = row[1] if row and row[1] else "-"
+        name = ((row[2] or "") + " " + (row[3] or "")).strip() if row else "-"
+        cur = await db.execute("INSERT INTO complaints(from_id, from_role, text) VALUES(?,?,?)", (uid, role, text))
+        cid = cur.lastrowid
+        await db.commit()
+    await state.clear()
+    await log_action(uid, "complaint", "id=" + str(cid))
+    if ADMIN_ID:
+        try:
+            b = InlineKeyboardBuilder()
+            b.button(text="✉️ Ответить", callback_data="reply_compl:" + str(cid))
+            b.adjust(1)
+            await message.bot.send_message(ADMIN_ID, "⚠️ Жалоба #" + str(cid) + "\n\n" + name + "\n📱 " + str(phone) + "\n🎭 " + role + "\n🆔 " + str(uid) + "\n\n📝 " + text, reply_markup=b.as_markup())
+        except Exception:
+            pass
+    await message.answer("✅ Отправлено.", reply_markup=main_menu(lang))
+
+@router.callback_query(F.data.startswith("reply_compl:"))
+async def admin_reply_start(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Только админ", show_alert=True)
+        return
+    cid = int(call.data.split(":")[1])
+    await state.update_data(complaint_id=cid)
+    await state.set_state(AdminReply.waiting)
+    await call.message.answer("✍️ Ответ:")
+    await call.answer()
+
+@router.message(AdminReply.waiting)
+async def admin_reply_send(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    cid = data.get("complaint_id")
+    if not cid:
+        await state.clear()
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT from_id FROM complaints WHERE id=?", (cid,))
+        row = await cur.fetchone()
+        if not row:
+            await message.answer("Не найдена")
+            await state.clear()
+            return
+        uid = row[0]
+        await db.execute("UPDATE complaints SET answer=?, status='answered' WHERE id=?", (message.text, cid))
+        await db.commit()
+    try:
+        await message.bot.send_message(uid, "✉️ Ответ на жалобу #" + str(cid) + "\n\n" + message.text)
+        await message.answer("✅ Отправлено.")
+    except Exception:
+        await message.answer("⚠️ Не доставлено.")
+    await state.clear()
+
+@router.message(Command("admin"))
+async def admin_panel(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(Admin2FA.waiting_password)
+    await message.answer("🔐 Введите пароль админа:")
+
+@router.message(Admin2FA.waiting_password)
+async def admin_2fa(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    txt = (message.text or "").strip()
+    if txt != ADMIN_PASSWORD:
+        await message.answer("❌ Неверный пароль.")
+        await log_action(message.from_user.id, "admin_2fa_fail")
+        await state.clear()
+        return
+    await state.clear()
+    await log_action(message.from_user.id, "admin_login")
+    lang = await get_lang(message.from_user.id)
+    await message.answer("👑 Админ-панель", reply_markup=admin_menu(lang))
+
+@router.message(F.text.in_(["🔙 Выйти", "🔙 Баромад"]))
+async def admin_exit(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    lang = await get_lang(message.from_user.id)
+    await message.answer("Выход.", reply_markup=main_menu(lang))
+@router.message(F.text.in_(["📊 Статистика", "📊 Омор"]))
+async def admin_stats(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM users WHERE role='client'")
+        clients = (await cur.fetchone())[0]
+        cur = await db.execute("SELECT COUNT(*) FROM users WHERE role='driver'")
+        drivers = (await cur.fetchone())[0]
+        cur = await db.execute("SELECT COUNT(*) FROM orders")
+        total = (await cur.fetchone())[0]
+        cur = await db.execute("SELECT COUNT(*) FROM orders WHERE status='finished'")
+        fin = (await cur.fetchone())[0]
+        cur = await db.execute("SELECT COUNT(*) FROM orders WHERE status='cancelled'")
+        can = (await cur.fetchone())[0]
+        cur = await db.execute("SELECT SUM(price) FROM orders WHERE status='finished'")
+        rev = (await cur.fetchone())[0] or 0
+        cur = await db.execute("SELECT COUNT(*) FROM complaints WHERE status='new'")
+        comp = (await cur.fetchone())[0]
+    text = ("📊 Статистика\n\n"
+            "👤 Клиентов: " + str(clients) + "\n"
+            "🚗 Водителей: " + str(drivers) + "\n"
+            "📦 Заказов: " + str(total) + "\n"
+            "✅ Завершено: " + str(fin) + "\n"
+            "❌ Отменено: " + str(can) + "\n"
+            "💰 Оборот: " + str(rev) + " сомони\n"
+            "💵 Комиссия 10%: " + str(int(rev * 0.1)) + " сомони\n"
+            "⚠️ Новых жалоб: " + str(comp))
+    await message.answer(text)
+
+@router.message(F.text.in_(["🚗 Водители", "🚗 Ронандагон"]))
+async def admin_drivers(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT user_id, phone, call_phone, first_name, last_name, online, rating, rides, car_brand, car_plate, car_class, approved, rejected, banned FROM users WHERE role='driver' ORDER BY rides DESC LIMIT 20")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("Водителей нет.")
+        return
+    for uid, phone, cphone, fn, ln, online, rating, rides, brand, plate, cls, approved, rejected, banned in rows:
+        on = "🟢" if online else "⚪"
+        name = ((fn or "") + " " + (ln or "")).strip() or "—"
+        if banned:
+            status = "🚫"
+        elif approved:
+            status = "✅"
+        elif rejected:
+            status = "❌"
+        else:
+            status = "⏳"
+        text = (on + " [" + status + "] " + name + "\n"
+                "📱 Telegram: " + str(phone) + "\n"
+                "📞 Звонок: " + str(cphone or "—") + "\n"
+                "🚙 " + str(brand or "—") + " " + str(plate or "—") + " (" + str(cls or "—") + ")\n"
+                "⭐ " + str(round(rating, 1)) + " | 🚕 " + str(rides) + "\n"
+                "🆔 " + str(uid))
+        b = InlineKeyboardBuilder()
+        if banned:
+            b.button(text="✅ Разбанить", callback_data="unban:" + str(uid))
+        else:
+            b.button(text="🚫 Забанить", callback_data="ban:" + str(uid))
+        b.adjust(1)
+        await message.answer(text, reply_markup=b.as_markup())
+
+@router.message(F.text.in_(["👤 Клиенты", "👤 Мизоҷон"]))
+async def admin_clients(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT user_id, phone, call_phone, first_name, last_name, banned FROM users WHERE role='client' ORDER BY created_at DESC LIMIT 30")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("Клиентов нет.")
+        return
+    for uid, phone, cphone, fn, ln, banned in rows:
+        name = ((fn or "") + " " + (ln or "")).strip() or "—"
+        status = "🚫" if banned else "✅"
+        text = (status + " " + name + "\n"
+                "📱 Telegram: " + str(phone) + "\n"
+                "📞 Звонок: " + str(cphone or "—") + "\n"
+                "🆔 " + str(uid))
+        b = InlineKeyboardBuilder()
+        if banned:
+            b.button(text="✅ Разбанить", callback_data="unban:" + str(uid))
+        else:
+            b.button(text="🚫 Забанить", callback_data="ban:" + str(uid))
+        b.adjust(1)
+        await message.answer(text, reply_markup=b.as_markup())
+
+@router.callback_query(F.data.startswith("ban:"))
+async def ban_user(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Только админ", show_alert=True)
+        return
+    uid = int(call.data.split(":")[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET banned=1, online=0 WHERE user_id=?", (uid,))
+        await db.commit()
+    await log_action(uid, "banned_by_admin")
+    try:
+        await call.bot.send_message(uid, "🚫 Вы заблокированы администратором.")
+    except Exception:
+        pass
+    await call.answer("Забанен")
+    try:
+        await call.message.edit_text(call.message.text + "\n\n🚫 ЗАБАНЕН")
+    except Exception:
+        pass
+
+@router.callback_query(F.data.startswith("unban:"))
+async def unban_user(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Только админ", show_alert=True)
+        return
+    uid = int(call.data.split(":")[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET banned=0 WHERE user_id=?", (uid,))
+        await db.commit()
+    await log_action(uid, "unbanned_by_admin")
+    try:
+        await call.bot.send_message(uid, "✅ Вы разблокированы.")
+    except Exception:
+        pass
+    await call.answer("Разбанен")
+    try:
+        await call.message.edit_text(call.message.text + "\n\n✅ РАЗБАНЕН")
+    except Exception:
+        pass
+
+@router.message(F.text.in_(["📦 Заказы", "📦 Фармоишҳо"]))
+async def admin_orders(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id, client_id, driver_id, price, status FROM orders ORDER BY id DESC LIMIT 20")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("Заказов нет.")
+        return
+    text = "📦 Заказы\n\n"
+    for oid, cid, did, price, status in rows:
+        text += "#" + str(oid) + " " + str(price) + " сомони " + status + " К:" + str(cid) + " В:" + str(did or "—") + "\n"
+    await message.answer(text)
+
+@router.message(F.text.in_(["⚠️ Жалобы", "⚠️ Шикоятҳо"]))
+async def admin_complaints(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id, from_id, from_role, text FROM complaints WHERE status='new' ORDER BY id DESC LIMIT 10")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("✅ Жалоб нет.")
+        return
+    for cid, fid, role, text in rows:
+        b = InlineKeyboardBuilder()
+        b.button(text="✉️ Ответить", callback_data="reply_compl:" + str(cid))
+        b.adjust(1)
+        await message.answer("⚠️ Жалоба #" + str(cid) + " от " + str(fid) + " (" + role + "):\n\n" + text, reply_markup=b.as_markup())
+
+@router.message(F.text.in_(["💳 Заявки", "💳 Дархостҳо"]))
+async def admin_sub_requests(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id, driver_id FROM sub_requests WHERE status='pending' ORDER BY id DESC")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("✅ Заявок нет.")
+        return
+    for _, driver_id in rows:
+        b = InlineKeyboardBuilder()
+        b.button(text="✅ Подтвердить", callback_data="sub_ok:" + str(driver_id))
+        b.button(text="❌ Отклонить", callback_data="sub_no:" + str(driver_id))
+        b.adjust(2)
+        await message.answer("💳 Заявка от " + str(driver_id), reply_markup=b.as_markup())
+
+@router.message(F.text.in_(["🎁 Промокоды", "🎁 Промокодҳо"]))
+async def admin_promos(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT code, discount, uses, max_uses, active FROM promos ORDER BY id DESC LIMIT 10")
+        rows = await cur.fetchall()
+    text = "🎁 Промокоды\n\n"
+    if not rows:
+        text += "Нет промокодов.\n"
+    else:
+        for code, disc, uses, mx, act in rows:
+            text += ("✅" if act else "❌") + " " + code + " — " + str(disc) + "% (" + str(uses) + "/" + str(mx) + ")\n"
+    text += "\nСоздать: /newpromo"
+    await message.answer(text)
+
+@router.message(Command("newpromo"))
+async def new_promo(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(PromoCreate.code)
+    await message.answer("📝 Код промокода:")
+
+@router.message(PromoCreate.code)
+async def promo_set_code(message: Message, state: FSMContext):
+    code = (message.text or "").strip().upper()[:20]
+    if not code:
+        await message.answer("Введите код.")
+        return
+    await state.update_data(code=code)
+    await state.set_state(PromoCreate.discount)
+    await message.answer("💰 Скидка в % (1-99):")
+
+@router.message(PromoCreate.discount)
+async def promo_set_disc(message: Message, state: FSMContext):
+    try:
+        disc = int(message.text.strip())
+        if disc < 1 or disc > 99:
+            raise ValueError
+    except Exception:
+        await message.answer("Введите 1-99.")
+        return
+    data = await state.get_data()
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute("INSERT INTO promos(code, discount) VALUES(?, ?)", (data["code"], disc))
+            await db.commit()
+            await message.answer("✅ Промокод " + data["code"] + " — " + str(disc) + "%")
+        except Exception:
+            await message.answer("⚠️ Уже существует.")
+    await state.clear()
+
+@router.message(F.text.in_(["⭐ Отзывы", "⭐ Шарҳҳо"]))
+async def admin_reviews(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id, driver_id, rating, review FROM orders WHERE review != '' ORDER BY id DESC LIMIT 15")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("Отзывов пока нет.")
+        return
+    text = "⭐ Последние отзывы\n\n"
+    for oid, did, rating, review in rows:
+        text += "Заказ #" + str(oid) + " Водитель: " + str(did) + " ⭐" + str(rating) + "\n"
+        text += review[:150] + "\n\n"
+    await message.answer(text)
+
+@router.message(F.text.in_(["💰 Комиссии", "💰 Комиссияҳо"]))
+async def admin_commissions(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT driver_id, COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND driver_id IS NOT NULL GROUP BY driver_id ORDER BY SUM(price) DESC LIMIT 20")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("Нет завершённых заказов.")
+        return
+    text = "💰 Комиссии 10%\n\n"
+    total_comm = 0
+    for did, cnt, total in rows:
+        comm = int(total * 0.1)
+        total_comm += comm
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT first_name, last_name FROM users WHERE user_id=?", (did,))
+            urow = await cur.fetchone()
+        name = ((urow[0] or "") + " " + (urow[1] or "")).strip() if urow else str(did)
+        text += name + ": " + str(cnt) + " поездок, " + str(comm) + " сомони\n"
+    text += "\n💰 Итого: " + str(total_comm) + " сомони"
+    await message.answer(text)
+
+@router.message(F.text.in_(["📈 Прогноз", "📈 Пешгӯӣ"]))
+async def admin_forecast(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    now = datetime.now()
+    day_ago = (now - timedelta(days=1)).isoformat()
+    week_ago = (now - timedelta(days=7)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND created_at >= ?", (day_ago,))
+        d1 = await cur.fetchone()
+        cur = await db.execute("SELECT COUNT(*), COALESCE(SUM(price),0) FROM orders WHERE status='finished' AND created_at >= ?", (week_ago,))
+        d7 = await cur.fetchone()
+    per_day = d7[1] / 7 if d7[0] else 0
+    month = per_day * 30
+    text = ("📈 Прогноз\n\n"
+            "За сутки: " + str(d1[0]) + " заказов, " + str(d1[1]) + " сомони\n"
+            "За 7 дней: " + str(d7[0]) + " заказов, " + str(d7[1]) + " сомони\n\n"
+            "📊 Средний доход/день: " + str(round(per_day, 1)) + " сомони\n"
+            "Прогноз на 30 дней: " + str(int(month)) + " сомони\n"
+            "💵 Комиссия 10%: " + str(int(month * 0.1)) + " сомони")
+    await message.answer(text)
+
+@router.message(F.text.in_(["📜 Логи", "📜 Логҳо"]))
+async def admin_logs(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT user_id, action, details, created_at FROM logs ORDER BY id DESC LIMIT 30")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("Логов нет.")
+        return
+    text = "📜 Последние 30 логов\n\n"
+    for uid, action, details, dt in rows:
+        d = dt[:16] if dt else ""
+        text += "[" + d + "] " + str(uid) + " — " + action + "\n"
+        if details:
+            text += "   " + details[:80] + "\n"
+    await message.answer(text)
+
+@router.message(F.text.in_(["🚫 Чёрный список", "🚫 Рӯйхати сиёҳ"]))
+async def admin_blacklist(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT user_id, role, first_name, last_name, phone FROM users WHERE banned=1 ORDER BY user_id DESC LIMIT 30")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("✅ Чёрный список пуст.")
+        return
+    text = "🚫 Чёрный список\n\n"
+    for uid, role, fn, ln, phone in rows:
+        name = ((fn or "") + " " + (ln or "")).strip() or "—"
+        text += "🆔 " + str(uid) + " (" + str(role or "?") + ")\n"
+        text += name + " | " + str(phone) + "\n\n"
+    await message.answer(text)
+
+@router.message(F.text.in_(["📢 Рассылка", "📢 Паём"]))
+async def broadcast_start(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(Broadcast.text)
+    await message.answer("📢 Напишите текст для рассылки.\n\nОтмена: /cancel", reply_markup=ReplyKeyboardRemove())
+
+@router.message(Command("cancel"))
+async def cancel_broadcast(message: Message, state: FSMContext):
+    await state.clear()
+    lang = await get_lang(message.from_user.id)
+    await message.answer("Отменено.", reply_markup=admin_menu(lang))
+
+@router.message(Broadcast.text)
+async def broadcast_send(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text
+    await state.clear()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT user_id FROM users WHERE role IN ('client', 'driver') AND banned=0")
+        rows = await cur.fetchall()
+    sent = 0
+    for (uid,) in rows:
+        if uid == ADMIN_ID:
+            continue
+        try:
+            await message.bot.send_message(uid, "📢 Сообщение от администратора:\n\n" + text)
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+    await log_action(message.from_user.id, "broadcast", "sent=" + str(sent))
+    lang = await get_lang(message.from_user.id)
+    await message.answer("✅ Отправлено: " + str(sent), reply_markup=admin_menu(lang))
+
+@router.message(F.text.in_(["📥 Экспорт CSV", "📥 CSV содирот"]))
+async def admin_export(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id, client_id, driver_id, price, status, tariff, distance, created_at FROM orders ORDER BY id DESC")
+        rows = await cur.fetchall()
+    if not rows:
+        await message.answer("Заказов нет.")
+        return
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["ID", "Client", "Driver", "Price", "Status", "Tariff", "Distance", "Date"])
+    for r in rows:
+        writer.writerow(r)
+    data = buf.getvalue().encode("utf-8-sig")
+    file = BufferedInputFile(data, filename="orders.csv")
+    await message.answer_document(file, caption="📥 Экспорт: " + str(len(rows)))
 
 async def health(request):
     return web.Response(text="OK")
