@@ -572,8 +572,7 @@ async def reg_call_phone(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     call_phone = "" if txt == "-" else txt[:30]
     if call_phone:
-        async with
- aiosqlite.connect(DB_PATH   ) as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE users SET call_phone=? WHERE user_id=?", (call_phone, uid))
             await db.commit()
     await state.set_state(Reg.first_name)
