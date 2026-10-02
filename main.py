@@ -626,7 +626,9 @@ async def reg_last_name(message: Message, state: FSMContext):
 async def role_client(message: Message):
     uid = message.from_user.id
     if await is_banned(uid):
-        await message.answer("🚫 Заблокирова if not await is_registered(uid):
+        await message.answer("🚫 Заблокированы.")
+        return
+    if not await is_registered(uid):
         await message.answer("Сначала /start")
         return
     lang = await get_lang(uid)
@@ -1204,9 +1206,8 @@ async def finalize_accept(bot: Bot, order_id: int, driver_id: int, client_id: in
     caption = ("🚗 Водитель принял заказ #" + str(order_id) + "\n\n"
                "👤 " + driver_name + "\n"
                "📱 Telegram: " + str(driver_phone) + "\n"
-               "📞 Звонок: " + str(d]
-river_call_phone) + "\n\n"
-               "🚙 " + car_b   rand + " " + car_plate + " (" + car_class + ")\n\n"
+               "📞 Звонок: " + str(driver_call_phone) + "\n\n"
+               "🚙 " + car_brand + " " + car_plate + " (" + car_class + ")\n\n"
                "💰 " + str(price) + " сомони\n"
                "💳 " + pay_text + "\n\n"
                "⏱️ Подъедет через: " + eta_driver_text + "\n"
@@ -1235,7 +1236,8 @@ async def drv_status(call: CallbackQuery):
         await call.answer("Не активен", show_alert=True)
         return
     client_id = row[0]
-    tlat = row[2 tlon = row[3]
+    tlat = row[2]
+    tlon = row[3]
     texts = {
         "on_way": "🚗 Водитель выехал к вам!",
         "near": "📍 Водитель уже рядом!",
