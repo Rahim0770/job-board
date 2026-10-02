@@ -569,10 +569,9 @@ async def reg_phone_wrong(message: Message):
 async def reg_call_phone(message: Message, state: FSMContext):
     uid = message.from_user.id
     lang = await get_lang(uid)
-   ны txt = (message.text or.")
- "").strip()
-    call_phone = "" if txt == "-" else        txt[:30]
-    if return call_phone:
+    txt = (message.text or "").strip()
+    call_phone = "" if txt == "-" else txt[:30]
+    if call_phone:
         async with
  aiosqlite.connect(DB_PATH   ) as db:
             await db.execute("UPDATE users SET call_phone=? WHERE user_id=?", (call_phone, uid))
