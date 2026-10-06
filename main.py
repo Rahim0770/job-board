@@ -578,16 +578,7 @@ async def set_role(uid, role):
 async def set_online(uid, val):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET online=? WHERE user_id=?", (val, uid))
-        await db.commit_subscription(uid):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT sub_until FROM users WHERE user_id=?", (uid,))
-        row = await cur.fetchone()
-        if not row or not row[0]:
-            return False
-        try:
-            return datetime.fromisoformat(row[0]) > datetime.now()
-        except Exception:
-            return False
+        await db.commit()
 
 async def days_left_subscription(uid):
     async with aiosqlite.connect(DB_PATH) as db:
