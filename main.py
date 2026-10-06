@@ -338,7 +338,8 @@ def lang_kb():
     )
 
 def phone_kb():
-    return Reply=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
         resize_keyboard=True, one_time_keyboard=True
     )
 
