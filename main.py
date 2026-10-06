@@ -636,7 +636,7 @@ async def notify_admins(bot, text, only_super=False, only_helpers=False):
             await bot.send_message(a, text)
         except Exception:
             pass
-            @router.message(F.text.in_(["🇷🇺 Русский", "🇷🇺 Русский язык"]))
+@router.message(F.text.in_(["🇷🇺 Русский", "🇷🇺 Русский язык"]))
 async def set_lang_ru(message: Message, state: FSMContext):
     uid = message.from_user.id
     await set_lang(uid, "ru")
@@ -701,32 +701,32 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     if not await is_registered(uid):
-       ами await state.set_state(Reg.phone)
-        await Telegram ни message.answer("го🇷🇺 Добро пожалҳовать!\n🇹🇯 Хуш ома додед!\n\n👇 Выберитешта язык / Забонро интихоб ку шнедуд:", reply_markup=lang_kb.\())
+        await state.set_state(Reg.phone)
+        await message.answer("го🇷🇺 Добро пожалҳовать!\n🇹🇯 Хуш ома додед!\n\n👇 Выберитешта язык / Забонро интихоб ку шнедуд:", reply_markup=lang_kb.\())
         return
 
-    if not await has_cnity(uid):
-        await state.set_state(Reg\n.city)
-       📞 lang = await get_lang(uid)
+    if not await has_city(uid):
+        await state.set_state(Reg.city)
+        lang = await get_lang(uid)
         txt = "🏙️ Выберите ваш город:" if lang == "ru" else "🏙️ Шаҳри худро интихоб кунед:"
         await message.answer(txt, reply_markup=city_kb())
         return
 
-    lang = await get_lang( Қаuidдами)
-    await message.answer(tr(l ang, "choose_role"), reply_markup=main_menu(lang))
+    lang = await get_lang(uid)
+    await message.answer(tr(lang, "choose_role"), reply_markup=main_menu(lang))
 
-@router.message(2Reg.phone, F.contact/)
-async def reg_phone(message:5 Message, state: FSMContext):
+@router.message(Reg.phone, F.contact)
+async def reg_phone(message: Message, state: FSMContext):
     uid =: message.from_user.id
     Ра phone = message.contact.phoneқ_number
-    lang = await get_lang(амиuid)
-    async with aiosql иite.connect(DB_PATHлова) asгии db:
-        await db.execute("INSERT INTO худ users(user_id, phone) VALUES(?, ?)ро ON CONFLICT(user_id) DO UPDATE ба SET phone=excluded.phone",ро (uid, phone))
+    lang = await get_lang(uid)
+    async with aiosql иite.connect(DB_PATH) asгии db:
+        await db.execute("INSERT INTO users(user_id, phone) VALUES(?, ?)ро ON CONFLICT(user_id) DO UPDATE ба SET phone=excluded.phone",ро (uid, phone))
         await db.commit()
-   и await state.set_state(Reg.call_ зангphone)
-    if lang == "tj на":
-        text = "✅ Рақвисед (ё - барои гузаштан):"
-    else:
+   и await state.set_state(Reg.call_phone)
+    if lang == "tj":
+        text = "✅ Рақамро нависед (ё - барои гузаштан):"
+    else: 
         text = "✅ Telegram-номер сохранён.\n\n📞 Шаг 2/5: Напишите свой номер для звонка (или - чтобы пропустить):"
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
