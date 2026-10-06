@@ -304,14 +304,13 @@ async def get_all_admins():
         for r in rows:
             if r[0] not in result:
                 result.append(r[0])
-    returnKeyboard result
+    return result
 
 async def get_all_helpers():
-    async with aiosMarkqlite.connect(DB_PATH) as db:
-up        cur = await db.execute("SELECT user_id(
- FROM admins")
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT user_id FROM admins")
         rows = await cur.fetchall()
-               keyboard return [r[0] for r in rows]
+        return [r[0] for r in rows]
 
 async def is_banned(uid):
     async with aiosqlite.connect(DB_PATH) as db:
