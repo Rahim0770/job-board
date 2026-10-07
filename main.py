@@ -1278,9 +1278,8 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     eta = estimate_minutes(data["distance"])
     if is_scheduled:
         sdt = datetime.fromisoformat(sched_at)
-        await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n\n📅 На время: " + sdt.strftime("%d.%m.%Y %H:%M") + "\n\nМы напомним водителям заранее.")
-    else:
         await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n⏳ " + str(eta) + " мин\n\n🔍 Ищем водителя...")
+        data["client_id"] = call.from_user.id
         await notify_drivers(call.bot, order_id, data)
     await call.message.answer("Ожидайте:", reply_markup=builder.as_markup())
 
