@@ -462,16 +462,19 @@ def driver_menu(lang="ru"):
 def admin_menu(lang="ru"):
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=tr(lang, "stats")), KeyboardButton(text=tr(lang, "graph"))],
-            [KeyboardButton(text=tr(lang, "drivers")), KeyboardButton(text=tr(lang, "clients"))],
-            [KeyboardButton(text=tr(lang, "orders")), KeyboardButton(text=tr(lang, "complaints"))],
-            [KeyboardButton(text=tr(lang, "subreq")), KeyboardButton(text=tr(lang, "promo"))],
-            [KeyboardButton(text=tr(lang, "review")), KeyboardButton(text=tr(lang, "top"))],
-            [KeyboardButton(text=tr(lang, "commissions")), KeyboardButton(text=tr(lang, "forecast"))],
-            [KeyboardButton(text=tr(lang, "logs")), KeyboardButton(text=tr(lang, "blacklist"))],
-            [KeyboardButton(text=tr(lang, "admins_manage")), KeyboardButton(text=tr(lang, "bans_list"))],
-            [KeyboardButton(text=tr(lang, "broadcast"))],
-            [KeyboardButton(text=tr(lang, "export")), KeyboardButton(text=tr(lang, "exit"))],
+            [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="📈 График")],
+            [KeyboardButton(text="🚗 Список водителей")],
+            [KeyboardButton(text="👤 Список пассажиров")],
+            [KeyboardButton(text="👑 Список админов")],
+            [KeyboardButton(text="📦 Заказы"), KeyboardButton(text="⚠️ Жалобы")],
+            [KeyboardButton(text="💳 Заявки"), KeyboardButton(text="🎁 Промокоды")],
+            [KeyboardButton(text="⭐ Отзывы"), KeyboardButton(text="🏆 Топ водителей")],
+            [KeyboardButton(text="💰 Комиссии"), KeyboardButton(text="📈 Прогноз")],
+            [KeyboardButton(text="📜 Логи"), KeyboardButton(text="🚫 Чёрный список")],
+            [KeyboardButton(text="👑 Админы"), KeyboardButton(text="📋 Список банов")],
+            [KeyboardButton(text="🚫 Забанить"), KeyboardButton(text="✅ Разбанить")],
+            [KeyboardButton(text="📢 Рассылка")],
+            [KeyboardButton(text="📥 Экспорт CSV"), KeyboardButton(text="🔙 Выйти")],
         ],
         resize_keyboard=True
     )
