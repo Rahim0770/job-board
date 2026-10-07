@@ -1847,14 +1847,67 @@ async def drv_self_photo_wrong(message: Message):
 
 @router.message(DriverReg.location, F.location)
 async def drv_location(message: Message, state: FSMContext):
+    uid = message.from_user.id
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET driver_lat=?, driver_lon=?, online=1 WHERE user_id=?", (message.location.latitude, message.location.longitude, message.from_user.id))
+        await db.execute("UPDATE users SET driver_lat=?, driver_lon=?, online=1 WHERE user_id=?", (message.location.latitude, message.location.longitude, uid))
         await db.commit()
     await state.clear()
-    lang = await get_lang(message.from_user.id)
-    await log_action(message.from_user.id, "driver_online")
-    days = await days_left_subscription(message.from_user.id)
+    lang = await get_lang(uid)
+    await log_action(uid, "driver_online")
+    days = await days_left_subscription(uid)
     await message.answer("🟢 Вы на линии.\n⏳ Подписка: " + str(days) + " дн.", reply_markup=driver_menu(lang))
+    await send_pending_orders_to_driver(message.bot, uid)
+async def send_pending_orders_to_driver(bot: Bot, driver_id: int):
+    """Отправляет водителю все активные заказы в его городе."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT city FROM users WHERE user_id=?", (driver_id,))
+        row = await cur.fetchone()
+        if not row or not row[0]:
+            return
+        driver_city = row[0]
+
+        cur = await db.execute(
+            "SELECT id, from_lat, from_lon, to_lat, to_lon, distance, price, tariff, payment, comment, recommended_price, client_id "
+            "FROM orders WHERE status IN ('pending', 'scheduled') ORDER BY id DESC LIMIT 20"
+        )
+        orders = await cur.fetchall()
+
+    if not orders:
+        return
+
+    sent_count = 0
+    for (oid, flat, flon, tlat, tlon, dist, price, tariff, payment, comment, recommended, client_id) in orders:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT city FROM users WHERE user_id=?", (client_id,))
+            crow = await cur.fetchone()
+        if not crow or crow[0] != driver_city:
+            continue
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Принять — " + str(price) + " сомони", callback_data="accept:" + str(oid))
+        builder.button(text="💰 Предложить свою цену", callback_data="driver_offer:" + str(oid))
+        builder.adjust(1)
+
+        pay_text = "💵 Наличные" if payment == "cash" else "💳 Картой"
+        text = ("🔔 Новый заказ #" + str(oid) + "\n\n"
+                "🚕 " + TARIFFS[tariff]["name"] + "\n"
+                "📏 ~" + str(round(dist, 1)) + " км\n"
+                "💳 " + pay_text + "\n"
+                "💰 Клиент предлагает: " + str(price) + " сомони")
+        if comment:
+            text += "\n💬 " + comment
+
+        try:
+            await bot.send_message(driver_id, text, reply_markup=builder.as_markup())
+            sent_count += 1
+        except Exception as e:
+            logging.warning("Error send pending order: " + str(e))
+
+    if sent_count > 0:
+        try:
+            await bot.send_message(driver_id, "📋 Вам отправлено " + str(sent_count) + " активных заказов в вашем городе.")
+        except Exception:
+            pass
 
 @router.message(DriverReg.location)
 async def drv_location_wrong(message: Message):
