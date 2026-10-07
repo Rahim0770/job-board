@@ -3010,7 +3010,7 @@ async def start_web():
     app.router.add_get("/", health)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8081))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
