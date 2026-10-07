@@ -3004,19 +3004,8 @@ async def my_car(message: Message, state: FSMContext):
 
 async def health(request):
     return web.Response(text="OK")
-
-async def start_web():
-    app = web.Application()
-    app.router.add_get("/", health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8081))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
 async def main():
     await init_db()
-    await start_web()
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
