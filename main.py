@@ -316,7 +316,7 @@ async def is_banned(uid):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT banned FROM users WHERE user_id=?", (uid,))
         row = await cur.fetchone()
-        return row and row[0] == 1
+        return bool(row and row[0] == 1)
 
 async def ban_user(uid, reason, banned_by):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -327,6 +327,18 @@ async def unban_user(uid):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET banned=0, ban_reason='', banned_by=NULL, banned_at=NULL WHERE user_id=?", (uid,))
         await db.commit()
+
+async def has_subscription(uid):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT sub_until FROM users WHERE user_id=?", (uid,))
+        row = await cur.fetchone()
+        if not row or not row[0]:
+            return False
+        try:
+            until = datetime.fromisoformat(row[0])
+            return until > datetime.now()
+        except Exception:
+            return False
 
 def lang_kb():
     return ReplyKeyboardMarkup(
@@ -487,13 +499,11 @@ async def init_db():
             referred_by INTEGER,
             ref_count INTEGER DEFAULT 0,
             ref_activated INTEGER DEFAULT 0,
-            car_brand TEXT, car()
-
-_plate TEXT, car_class TEXT,
-            car_photoasync TEXT, self_photo TEXT,
+            car_brand TEXT, car_plate TEXT, car_class TEXT,
+            car_photo TEXT, self_photo TEXT,
             driver_lat REAL, driver_lon REAL,
-            def created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
- has        );
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS orders(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id INTEGER, driver_id INTEGER,
@@ -562,13 +572,13 @@ async def is_registered(uid):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT phone FROM users WHERE user_id=?", (uid,))
         row = await cur.fetchone()
-        return row and row[0]
+        return bool(row and row[0])
 
 async def has_city(uid):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT city FROM users WHERE user_id=?", (uid,))
         row = await cur.fetchone()
-        return row and row[0]
+        return bool(row and row[0])
 
 async def set_role(uid, role):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -636,6 +646,7 @@ async def notify_admins(bot, text, only_super=False, only_helpers=False):
             await bot.send_message(a, text)
         except Exception:
             pass
+
 @router.message(F.text.in_(["🇷🇺 Русский", "🇷🇺 Русский язык"]))
 async def set_lang_ru(message: Message, state: FSMContext):
     uid = message.from_user.id
@@ -702,7 +713,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
     if not await is_registered(uid):
         await state.set_state(Reg.phone)
-        await message.answer("го🇷🇺 Добро пожалҳовать!\n🇹🇯 Хуш ома додед!\n\n👇 Выберитешта язык / Забонро интихоб ку шнедуд:", reply_markup=lang_kb.\())
+        await message.answer("🇷🇺 Добро пожаловать!\n🇹🇯 Хуш омадед!\n\n👇 Выберите язык / Забонро интихоб кунед:", reply_markup=lang_kb())
         return
 
     if not await has_city(uid):
@@ -717,16 +728,16 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @router.message(Reg.phone, F.contact)
 async def reg_phone(message: Message, state: FSMContext):
-    uid =: message.from_user.id
-    Ра phone = message.contact.phoneқ_number
+    uid = message.from_user.id
+    phone = message.contact.phone_number
     lang = await get_lang(uid)
-    async with aiosql иite.connect(DB_PATH) asгии db:
-        await db.execute("INSERT INTO users(user_id, phone) VALUES(?, ?)ро ON CONFLICT(user_id) DO UPDATE ба SET phone=excluded.phone",ро (uid, phone))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO users(user_id, phone) VALUES(?, ?) ON CONFLICT(user_id) DO UPDATE SET phone=excluded.phone", (uid, phone))
         await db.commit()
-   и await state.set_state(Reg.call_phone)
+    await state.set_state(Reg.call_phone)
     if lang == "tj":
         text = "✅ Рақамро нависед (ё - барои гузаштан):"
-    else: 
+    else:
         text = "✅ Telegram-номер сохранён.\n\n📞 Шаг 2/5: Напишите свой номер для звонка (или - чтобы пропустить):"
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
@@ -999,7 +1010,8 @@ async def sub_reject(call: CallbackQuery):
     except Exception:
         pass
     await call.answer()
-    @router.message(F.text.in_(["🚕 Заказать такси", "🚕 Фармоиши такси"]))
+
+@router.message(F.text.in_(["🚕 Заказать такси", "🚕 Фармоиши такси"]))
 async def order_start(message: Message, state: FSMContext):
     uid = message.from_user.id
     if await is_banned(uid):
@@ -1493,7 +1505,8 @@ async def client_counter_save(message: Message, state: FSMContext):
     except Exception:
         pass
     await message.answer("📤 Ваша цена отправлена водителю.")
-    @router.callback_query(F.data.startswith("accept:"))
+
+@router.callback_query(F.data.startswith("accept:"))
 async def accept_order(call: CallbackQuery):
     order_id = int(call.data.split(":")[1])
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1899,7 +1912,8 @@ async def driver_reject(call: CallbackQuery):
     except Exception:
         pass
     await call.answer("Отклонён")
-    @router.message(Command("admin"))
+
+@router.message(Command("admin"))
 async def admin_panel(message: Message, state: FSMContext):
     if not await is_admin(message.from_user.id):
         return
@@ -2492,7 +2506,8 @@ async def admin_export(message: Message):
 @router.message(F.text.in_(["🌍 Сменить язык", "🌍 Иваз кардани забон"]))
 async def change_lang_menu(message: Message):
     await message.answer("👇 Выберите язык:", reply_markup=lang_kb())
-    @router.callback_query(F.data.startswith("chat_start:"))
+
+@router.callback_query(F.data.startswith("chat_start:"))
 async def chat_start(call: CallbackQuery, state: FSMContext):
     order_id = int(call.data.split(":")[1])
     async with aiosqlite.connect(DB_PATH) as db:
