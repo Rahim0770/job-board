@@ -69,7 +69,6 @@ input,select{font:inherit;color:inherit}
 .login-foot{font-size:12px;color:var(--t3);text-align:center;margin-top:16px;line-height:1.6}
 .login-foot a{color:var(--y);font-weight:700;cursor:pointer}
 
-/* приветствие Telegram-пользователя */
 .tg-hello{
   display:flex;align-items:center;gap:12px;
   width:100%;max-width:360px;margin-bottom:22px;
@@ -81,7 +80,6 @@ input,select{font:inherit;color:inherit}
 .tg-hello .info b{display:block;font-size:15px}
 .tg-hello .info span{font-size:12px;color:var(--t2)}
 
-/* ============ TOP ============ */
 .top{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:rgba(11,11,12,.95);backdrop-filter:blur(10px);flex-wrap:wrap}
 .brand{display:flex;align-items:baseline;gap:5px;font-style:italic;font-weight:900}
 .logo-tez{font-size:22px;color:var(--t);position:relative}
@@ -97,7 +95,6 @@ input,select{font:inherit;color:inherit}
 .role-tag b{color:var(--y)}
 .logout{margin-left:6px;padding:8px 12px;border-radius:9px;background:var(--s3);font-size:12px;font-weight:700;color:var(--t2)}
 
-/* ============ STAGE ============ */
 .stage{
   display:grid;
   grid-template-columns:minmax(360px,440px);
@@ -216,7 +213,6 @@ td.num{font-weight:700}
 .mt{margin-top:16px}
 .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--y);color:#111;font-weight:800;padding:14px 22px;border-radius:14px;z-index:9000;box-shadow:0 12px 34px rgba(0,0,0,.5);max-width:90vw}
 
-/* ====== МАРКЕРЫ КАРТЫ ====== */
 .mk-you{width:44px;height:56px;position:relative}
 .mk-you .box{
   width:44px;height:44px;border-radius:12px;
@@ -272,7 +268,6 @@ td.num{font-weight:700}
 </head>
 <body>
 
-<!-- ============ LOGIN SCREEN ============ -->
 <div id="loginScreen">
   <div class="tg-hello hidden" id="tgHello">
     <img id="tgAvatar" src="" alt="">
@@ -322,7 +317,6 @@ td.num{font-weight:700}
   </div>
 </div>
 
-<!-- ============ APP ============ -->
 <div id="appWrap" class="hidden">
   <header class="top">
     <div class="brand">
@@ -365,7 +359,6 @@ td.num{font-weight:700}
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-/* ============ TELEGRAM WEBAPP ============ */
 const TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 let tgUser = null;
 if(TG){
@@ -378,7 +371,6 @@ if(TG){
   } catch(e){ console.warn('TG init error', e); }
 }
 
-/* ============ CONSTANTS ============ */
 const DEMO_PHONE = '013585958';
 const DEMO_PASS  = 'KING0770';
 
@@ -442,7 +434,6 @@ function toast(m){
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.hidden=true,2200);
 }
 
-/* ============ TELEGRAM HELLO ============ */
 function showTgHello(){
   if(!tgUser) return;
   const box = q('#tgHello'); if(!box) return;
@@ -455,7 +446,6 @@ function showTgHello(){
 }
 showTgHello();
 
-/* ============ AUTH ============ */
 function tapLogoClick(e){ if(e) e.preventDefault(); handleTap(); }
 function tapLogoTouch(e){ if(e) e.preventDefault(); handleTap(); }
 function handleTap(){
@@ -472,12 +462,7 @@ function handleTap(){
 function pickRole(e, role){
   if(e){ e.preventDefault(); e.stopPropagation(); }
   loginRole = role;
-  // Если открыто в Telegram — сразу входим без логина
-  if(TG && tgUser){
-    enterApp(role);
-    return;
-  }
-  // Иначе — показываем форму логина
+  if(TG && tgUser){ enterApp(role); return; }
   q('#roleBtns').classList.add('hidden');
   q('#adminForm').classList.add('hidden');
   q('#loginForm').classList.remove('hidden');
@@ -530,10 +515,7 @@ function showOnly(role){
     q('#colDispatch').classList.remove('hidden');
     q('#roleTag').innerHTML = 'Роль: <b>Диспетчер</b>';
   }
-  // В Telegram скрываем верхнюю панель, чтобы не занимать место
-  if(TG){
-    q('.top').style.display = 'none';
-  }
+  if(TG){ q('.top').style.display = 'none'; }
 }
 function enterApp(role){
   state.role = role;
@@ -556,7 +538,6 @@ function logout(e){
   toast('Вы вышли');
 }
 
-/* ============ MAP ============ */
 let clientClickMode = 'from';
 
 function youIcon(){
@@ -673,7 +654,6 @@ function parseAddress(text){
   return { name: t, lat: +lat.toFixed(5), lon: +lon.toFixed(5), custom:true };
 }
 
-/* ============ CLIENT ============ */
 function renderClient(){
   const sheet=q('#clientSheet'); if(!sheet) return;
   const s=state.clientStage;
@@ -769,7 +749,6 @@ function finishClient(){
   renderClient(); toast('Спасибо!');
 }
 
-/* ============ DRIVER ============ */
 function pickupWaitingOrder(){
   if(state.clientStage === 'searching' && state.myOrder && state.driverStage === 'idle'){
     state.driverStage='incoming'; state.incomingOrder = state.myOrder; state.incomingTimer = 45;
@@ -866,7 +845,6 @@ function renderDriver(){
   const bc=q('#btnChatD'); if(bc) bc.onclick=()=>toast('Чат (демо)');
 }
 
-/* ============ DISPATCH ============ */
 function renderDispatch(){
   const panel=q('#dispatch'); if(!panel) return;
   const today=state.orders.length;
@@ -928,7 +906,6 @@ function renderDispatch(){
   });
 }
 
-/* ============ INIT ============ */
 updateDistance();
 </script>
 </body>
