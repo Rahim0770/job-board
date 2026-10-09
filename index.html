@@ -1,0 +1,935 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>TEZ TAXI — Mini App</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;1,800;1,900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --y:#FFC800; --y2:#FFD84D;
+  --bg:#0B0B0C; --s1:#141416; --s2:#1C1C1F; --s3:#26262A; --line:#2E2E33;
+  --t:#F4F4F2; --t2:#A9A9AE; --t3:#6E6E74;
+  --ok:#3CCB7F; --bad:#FF5A4E; --info:#5AA9FF;
+  font-family:'Montserrat',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{background:var(--bg);color:var(--t);min-height:100%}
+body{font-size:14px;line-height:1.4;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+button,a{font:inherit;cursor:pointer;border:0;background:none;color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent}
+input,select{font:inherit;color:inherit}
+.hidden{display:none!important}
+
+/* ============ LOGIN ============ */
+#loginScreen{
+  min-height:100vh;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:radial-gradient(circle at 50% 0%, #1a1a1d 0%, #0B0B0C 60%);
+  padding:24px 20px;overflow-y:auto;
+}
+.login-logo{
+  display:flex;align-items:baseline;gap:8px;
+  font-style:italic;font-weight:900;letter-spacing:.02em;
+  margin-bottom:6px;user-select:none;-webkit-user-select:none;
+  cursor:pointer;
+}
+.login-logo .tez{font-size:40px;color:#fff;position:relative}
+.login-logo .tez::after{content:'';position:absolute;right:-3px;top:11px;width:0;height:0;border-left:14px solid transparent;border-bottom:20px solid var(--y);transform:skewX(-20deg)}
+.login-logo .taxi{font-size:40px;color:#fff;font-weight:400;letter-spacing:.3em}
+.login-tag{font-size:10px;color:var(--t3);letter-spacing:.25em;text-transform:uppercase;margin-bottom:32px}
+.login-tag b{color:var(--y)}
+.role-btns{display:flex;flex-direction:column;gap:12px;width:100%;max-width:360px;margin-bottom:24px}
+.role-btn{
+  display:flex;align-items:center;gap:14px;
+  padding:18px 20px;border-radius:18px;
+  background:var(--s1);border:1px solid var(--line);
+  font-weight:800;font-size:16px;color:var(--t);
+  transition:.15s;text-align:left;width:100%;
+}
+.role-btn .ico{
+  width:44px;height:44px;border-radius:50%;
+  display:grid;place-items:center;font-size:24px;flex:none;
+  background:var(--s3);
+}
+.role-btn small{display:block;font-size:11px;color:var(--t2);font-weight:500;margin-top:2px}
+
+.login-form{width:100%;max-width:360px;display:flex;flex-direction:column;gap:10px}
+.login-form.hidden{display:none}
+.phone-wrap{display:flex;align-items:center;background:var(--s1);border:1px solid var(--line);border-radius:14px;padding:0 14px}
+.phone-wrap .prefix{color:var(--y);font-weight:800;font-size:15px;padding:14px 10px 14px 0;border-right:1px solid var(--line);margin-right:10px}
+.phone-wrap input{flex:1;background:none;border:0;outline:none;color:var(--t);font-weight:700;font-size:16px;padding:14px 0;letter-spacing:.03em;width:100%}
+.phone-wrap input::placeholder{color:var(--t3);font-weight:500;letter-spacing:0}
+.login-form input.pw{background:var(--s1);border:1px solid var(--line);border-radius:14px;padding:14px;color:var(--t);font-weight:700;font-size:16px;outline:none;letter-spacing:.15em}
+.login-form input.pw:focus{border-color:var(--y)}
+.login-form .btn{margin-top:6px}
+.login-err{color:var(--bad);font-size:13px;text-align:center;margin-top:2px;min-height:18px;font-weight:600}
+.login-foot{font-size:12px;color:var(--t3);text-align:center;margin-top:16px;line-height:1.6}
+.login-foot a{color:var(--y);font-weight:700;cursor:pointer}
+
+/* приветствие Telegram-пользователя */
+.tg-hello{
+  display:flex;align-items:center;gap:12px;
+  width:100%;max-width:360px;margin-bottom:22px;
+  padding:12px 16px;border-radius:16px;
+  background:var(--s1);border:1px solid var(--line);
+}
+.tg-hello img{width:44px;height:44px;border-radius:50%;flex:none}
+.tg-hello .info{flex:1}
+.tg-hello .info b{display:block;font-size:15px}
+.tg-hello .info span{font-size:12px;color:var(--t2)}
+
+/* ============ TOP ============ */
+.top{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:rgba(11,11,12,.95);backdrop-filter:blur(10px);flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:5px;font-style:italic;font-weight:900}
+.logo-tez{font-size:22px;color:var(--t);position:relative}
+.logo-tez::after{content:'';position:absolute;right:-2px;top:6px;width:0;height:0;border-left:9px solid transparent;border-bottom:13px solid var(--y);transform:skewX(-20deg)}
+.logo-taxi{font-size:22px;color:var(--t);font-weight:400;letter-spacing:.3em}
+.badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--bg);background:var(--y);padding:3px 8px;border-radius:6px}
+.role-tag{
+  margin-left:auto;
+  padding:7px 14px;border-radius:20px;
+  background:var(--s1);border:1px solid var(--line);
+  font-size:12px;font-weight:800;color:var(--t2);
+}
+.role-tag b{color:var(--y)}
+.logout{margin-left:6px;padding:8px 12px;border-radius:9px;background:var(--s3);font-size:12px;font-weight:700;color:var(--t2)}
+
+/* ============ STAGE ============ */
+.stage{
+  display:grid;
+  grid-template-columns:minmax(360px,440px);
+  justify-content:center;
+  gap:22px;padding:22px;align-items:start;
+}
+.phone{width:100%;height:calc(100vh - 120px);min-height:600px;max-height:820px;border-radius:40px;border:9px solid #000;background:#F5F5F2;color:#111;overflow:hidden;position:relative;display:flex;flex-direction:column;box-shadow:0 30px 70px rgba(0,0,0,.6)}
+.phone.dark{background:var(--bg);color:var(--t)}
+.phone-bar{display:flex;justify-content:space-between;align-items:center;padding:12px 22px 10px;font-size:12px;font-weight:700;background:#111;color:#fff;flex:none}
+.ph-brand{font-style:italic;font-weight:900;color:var(--y)}
+.map-wrap{flex:1;min-height:200px;position:relative}
+.map{width:100%;height:100%;background:#ddd}
+.sheet{background:#fff;border-radius:24px 24px 0 0;margin-top:-22px;position:relative;z-index:500;padding:18px;box-shadow:0 -8px 30px rgba(0,0,0,.15);max-height:70%;overflow:auto;flex:none;color:#111}
+.sheet h3{font-size:19px;font-weight:800;margin-bottom:12px}
+.grab{width:44px;height:5px;border-radius:5px;background:#ddd;margin:0 auto 14px}
+.field{display:flex;align-items:center;gap:12px;background:#F2F2EF;border-radius:14px;padding:6px 14px;margin-bottom:9px}
+.field .dot{width:11px;height:11px;border-radius:50%;flex:none}
+.dot.a{background:#111}
+.dot.b{background:var(--y);box-shadow:0 0 0 2px #111 inset}
+.field input{flex:1;border:0;background:transparent;padding:11px 0;font-weight:600;font-size:15px;outline:none;color:#111;width:100%}
+.hint{font-size:11px;color:#888;margin:-4px 0 8px 34px}
+.tariffs{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:12px 0}
+.tariff{border:2px solid #EEE;border-radius:14px;padding:10px;text-align:left;background:#FAFAF8;color:#111;transition:.15s}
+.tariff b{display:block;font-size:13px;font-weight:800}
+.tariff span{font-size:11px;color:#888}
+.tariff .p{display:block;font-weight:900;font-size:17px;margin-top:5px;color:#111}
+.tariff.sel{border-color:#111;background:#FFF6CC;transform:scale(1.02)}
+.pay{display:flex;gap:8px;margin:10px 0 14px;flex-wrap:wrap}
+.chip{padding:8px 14px;border-radius:20px;background:#F2F2EF;font-size:12px;font-weight:700;color:#333;transition:.15s}
+.chip.sel{background:#111;color:#fff}
+.btn{display:flex;align-items:center;justify-content:center;width:100%;padding:15px;border-radius:14px;font-weight:800;font-size:15px;background:var(--y);color:#111;transition:transform .1s;cursor:pointer}
+.btn.ghost{background:#F2F2EF;color:#111}
+.btn.dk{background:var(--s3);color:var(--t)}
+.btn.red{background:transparent;color:var(--bad);border:1px solid currentColor}
+.btn.green{background:var(--ok);color:#06210f}
+.btn.sm{padding:9px 12px;font-size:13px;border-radius:10px;width:auto}
+.btns{display:flex;gap:8px;margin-top:10px}
+.btns .btn{flex:1}
+.status-big{font-size:21px;font-weight:800;margin-bottom:5px}
+.pulse{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--y);margin-right:8px;animation:pulse 1.2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,200,0,.7)}100%{box-shadow:0 0 0 16px rgba(255,200,0,0)}}
+.drv-card{display:flex;gap:14px;align-items:center;background:#F7F7F4;border-radius:16px;padding:14px;margin:14px 0}
+.ava{width:50px;height:50px;border-radius:50%;background:#111;color:var(--y);display:grid;place-items:center;font-weight:800;font-size:18px;flex:none}
+.plate{display:inline-block;border:2px solid #111;border-radius:6px;padding:2px 8px;font-weight:800;font-size:13px;margin-top:5px;background:#fff;color:#111}
+.stars{display:flex;gap:8px;justify-content:center;margin:14px 0}
+.stars button{font-size:36px;color:#DDD;line-height:1;cursor:pointer}
+.stars button.on{color:var(--y)}
+.muted{color:#888;font-size:12px}
+.spinner{width:52px;height:52px;border-radius:50%;border:4px solid rgba(255,200,0,.2);border-top-color:var(--y);margin:30px auto;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.driver-app{flex:1;display:flex;flex-direction:column;overflow:auto;padding:18px}
+.d-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.d-head .ava{background:var(--y);color:#111}
+.d-head b{display:block;font-size:15px}
+.d-head span{font-size:12px;color:var(--t2)}
+.online{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;flex-direction:column;text-align:center}
+.switch{width:50px;height:28px;border-radius:20px;background:var(--s3);position:relative;transition:.25s;cursor:pointer}
+.switch::after{content:'';position:absolute;width:22px;height:22px;border-radius:50%;background:#fff;top:3px;left:3px;transition:.25s}
+.switch.on{background:var(--ok)}
+.switch.on::after{left:25px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:16px}
+.stat{background:var(--s1);border:1px solid var(--line);border-radius:14px;padding:12px}
+.stat b{display:block;font-size:19px;font-weight:800}
+.stat span{font-size:11px;color:var(--t2)}
+.d-card{background:var(--s1);border:1px solid var(--line);border-radius:18px;padding:16px;margin-bottom:14px}
+.d-card.new{border-color:var(--y);box-shadow:0 0 0 1px var(--y),0 12px 34px rgba(255,200,0,.15);animation:pop .35s}
+@keyframes pop{from{transform:scale(.95);opacity:0}}
+.d-card h4{font-size:12px;color:var(--y);text-transform:uppercase;letter-spacing:.09em;margin-bottom:10px;font-weight:800}
+.route{position:relative;padding-left:22px;margin:8px 0 12px}
+.route::before{content:'';position:absolute;left:5px;top:10px;bottom:10px;width:2px;background:var(--line)}
+.route div{position:relative;padding:4px 0;font-weight:600;font-size:13px}
+.route div::before{content:'';position:absolute;left:-22px;top:9px;width:11px;height:11px;border-radius:50%;background:#fff}
+.route div:last-child::before{background:var(--y)}
+.price-big{font-size:30px;font-weight:900;font-style:italic;color:var(--y)}
+.timer{height:5px;border-radius:5px;background:var(--s3);overflow:hidden;margin-top:12px}
+.timer i{display:block;height:100%;background:var(--y);transition:width 1s linear}
+.empty{color:var(--t2);text-align:center;padding:40px 14px;font-size:13px}
+.empty .big{font-size:40px;margin-bottom:10px;color:var(--t3)}
+.dot-wait{width:14px;height:14px;border-radius:50%;background:var(--y);animation:pulse 1.4s infinite;margin:0 auto 12px}
+.d-list .li{display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--line);font-size:13px}
+.d-list .li span{color:var(--t2)}
+.panel{background:var(--s1);border:1px solid var(--line);border-radius:22px;padding:22px;min-height:820px}
+.panel-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.14em;color:var(--t3);margin-bottom:14px}
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px}
+.kpi{background:var(--s2);border-radius:16px;padding:16px 18px}
+.kpi span{font-size:12px;color:var(--t2)}
+.kpi b{display:block;font-size:28px;font-weight:800;margin-top:4px}
+.kpi b.y{color:var(--y)}
+.box{background:var(--s2);border-radius:16px;padding:16px;margin-bottom:14px}
+.box-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:10px}
+.box-h h3{font-size:15px;font-weight:800}
+.box-h .sub{font-size:12px;color:var(--t2)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;color:var(--t3);font-weight:600;padding:8px 6px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase}
+td{padding:9px 6px;border-bottom:1px solid var(--line)}
+td.num{font-weight:700}
+.tbl-wrap{max-height:340px;overflow:auto}
+.st{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.st.search{background:rgba(255,200,0,.15);color:var(--y)}
+.st.done{background:var(--s3);color:var(--t2)}
+.st.cancel{background:rgba(255,90,78,.12);color:var(--bad)}
+.st.free{background:rgba(60,203,127,.15);color:var(--ok)}
+#dispMap{height:280px;border-radius:14px;margin-bottom:12px}
+.drv-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:13px}
+.drv-row .ava{width:34px;height:34px;font-size:13px;background:var(--s3);color:var(--t)}
+.drv-row small{display:block;color:var(--t2);font-size:11px}
+.drv-row .st{margin-left:auto}
+.form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.form-grid label{font-size:11px;color:var(--t2);display:flex;flex-direction:column;gap:5px;font-weight:600;text-transform:uppercase}
+.inp{background:var(--s3);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;width:100%;outline:none;color:var(--t);font-weight:600}
+.tariff-set{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.tariff-set .t{background:var(--s3);border-radius:12px;padding:12px}
+.tariff-set .t b{display:block;font-size:13px;margin-bottom:8px}
+.tariff-set label{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--t2);margin-top:5px;gap:8px}
+.tariff-set input{width:64px;padding:5px 7px;background:var(--s2);border:1px solid var(--line);border-radius:7px;color:var(--t);font-weight:700;outline:none;font-size:12px}
+.mt{margin-top:16px}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--y);color:#111;font-weight:800;padding:14px 22px;border-radius:14px;z-index:9000;box-shadow:0 12px 34px rgba(0,0,0,.5);max-width:90vw}
+
+/* ====== МАРКЕРЫ КАРТЫ ====== */
+.mk-you{width:44px;height:56px;position:relative}
+.mk-you .box{
+  width:44px;height:44px;border-radius:12px;
+  background:var(--y);
+  border:3px solid #fff;
+  box-shadow:0 3px 10px rgba(0,0,0,.35);
+  display:flex;align-items:center;justify-content:center;
+}
+.mk-you .box svg{width:24px;height:24px;fill:#111}
+.mk-you .leg{
+  position:absolute;left:50%;bottom:-2px;transform:translateX(-50%);
+  width:3px;height:12px;background:#111;
+  border-radius:2px;
+}
+.mk-you .shadow{
+  position:absolute;left:50%;bottom:-6px;transform:translateX(-50%);
+  width:14px;height:4px;background:rgba(0,0,0,.25);border-radius:50%;
+  filter:blur(1px);
+}
+.mk-b{
+  width:26px;height:26px;border-radius:50% 50% 50% 0;
+  background:var(--y);border:3px solid #fff;
+  transform:rotate(-45deg);
+  box-shadow:0 3px 10px rgba(0,0,0,.5);
+  display:flex;align-items:center;justify-content:center;
+}
+.mk-b::after{content:'';width:8px;height:8px;border-radius:50%;background:#111;transform:rotate(45deg)}
+.mk-car{width:36px;height:36px;border-radius:50%;background:#111;border:2px solid var(--y);display:grid;place-items:center;box-shadow:0 2px 10px rgba(0,0,0,.6)}
+.mk-car svg{width:20px;height:20px;display:block}
+.mk-car svg path{fill:#fff}
+.mk-car.busy svg path{fill:#5AA9FF}
+.mk-car.off svg path{fill:#777}
+.locate-btn{
+  position:absolute;right:14px;bottom:14px;z-index:600;
+  width:52px;height:52px;border-radius:50%;
+  background:#fff;
+  border:1px solid #ddd;
+  box-shadow:0 4px 14px rgba(0,0,0,.15);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;
+}
+.locate-btn svg{width:24px;height:24px;fill:#2E8BFF}
+.locate-btn:active{transform:scale(.95)}
+
+@media (max-width:760px){
+  .stage{grid-template-columns:1fr;padding:0}
+  .phone{height:100vh;border-radius:0;border:0;max-height:none;box-shadow:none}
+  .form-grid,.tariff-set{grid-template-columns:1fr}
+  .login-logo .tez,.login-logo .taxi{font-size:34px}
+  .top{padding:12px}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN SCREEN ============ -->
+<div id="loginScreen">
+  <div class="tg-hello hidden" id="tgHello">
+    <img id="tgAvatar" src="" alt="">
+    <div class="info"><b id="tgName">—</b><span id="tgUser">@—</span></div>
+  </div>
+
+  <div class="login-logo" id="loginLogo" ontouchend="tapLogoTouch(event)" onclick="tapLogoClick(event)">
+    <span class="tez">TEZ</span><span class="taxi">TAXI</span>
+  </div>
+  <div class="login-tag">Прототип · <b>demo</b></div>
+
+  <div class="role-btns" id="roleBtns">
+    <a class="role-btn" href="javascript:void(0)" ontouchend="pickRole(event,'client')" onclick="pickRole(event,'client')">
+      <span class="ico">🚕</span>
+      <span>Я пассажир<small>Заказать такси</small></span>
+    </a>
+    <a class="role-btn" href="javascript:void(0)" ontouchend="pickRole(event,'driver')" onclick="pickRole(event,'driver')">
+      <span class="ico">🚗</span>
+      <span>Я водитель<small>Получать заказы</small></span>
+    </a>
+  </div>
+
+  <div class="login-form hidden" id="loginForm">
+    <div class="phone-wrap">
+      <span class="prefix">+992</span>
+      <input id="inpPhone" type="tel" inputmode="numeric" placeholder="013585958" value="013585958" autocomplete="off">
+    </div>
+    <input class="pw" id="inpPass" type="password" placeholder="Пароль" value="KING0770" autocomplete="off">
+    <div class="login-err" id="loginErr"></div>
+    <a class="btn" href="javascript:void(0)" ontouchend="doLogin(event)" onclick="doLogin(event)">Войти</a>
+    <a class="btn ghost" href="javascript:void(0)" ontouchend="backToRoles(event)" onclick="backToRoles(event)">Назад</a>
+  </div>
+
+  <div class="login-form hidden" id="adminForm">
+    <div class="phone-wrap">
+      <span class="prefix">+992</span>
+      <input id="admPhone" type="tel" inputmode="numeric" placeholder="013585958" value="013585958" autocomplete="off">
+    </div>
+    <input class="pw" id="admPass" type="password" placeholder="Пароль" value="KING0770" autocomplete="off">
+    <div class="login-err" id="admErr"></div>
+    <a class="btn" href="javascript:void(0)" ontouchend="doAdminLogin(event)" onclick="doAdminLogin(event)">Войти</a>
+    <a class="btn ghost" href="javascript:void(0)" ontouchend="backToRoles(event)" onclick="backToRoles(event)">Отмена</a>
+  </div>
+
+  <div class="login-foot">
+    Нет аккаунта? <a ontouchend="regInfo(event)" onclick="regInfo(event)">Регистрация</a>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="appWrap" class="hidden">
+  <header class="top">
+    <div class="brand">
+      <span class="logo-tez">TEZ</span>
+      <span class="logo-taxi">TAXI</span>
+    </div>
+    <span class="badge">Прототип</span>
+    <div class="role-tag" id="roleTag">Роль: <b>—</b></div>
+    <a class="logout" href="javascript:void(0)" ontouchend="logout(event)" onclick="logout(event)">Выйти</a>
+  </header>
+
+  <main class="stage" id="stageArea">
+    <section class="col col-client hidden" id="colClient">
+      <div class="phone">
+        <div class="phone-bar"><span>9:41</span><span class="ph-brand">TEZ TAXI</span><span>●●●</span></div>
+        <div class="map-wrap">
+          <div id="clientMap" class="map"></div>
+          <div class="locate-btn" id="locateBtn" title="Моё местоположение">
+            <svg viewBox="0 0 24 24"><path d="M12 2l4 10-4-2-4 2 4-10z"/></svg>
+          </div>
+        </div>
+        <div class="sheet" id="clientSheet"></div>
+      </div>
+    </section>
+
+    <section class="col col-driver hidden" id="colDriver">
+      <div class="phone dark">
+        <div class="phone-bar"><span>9:41</span><span class="ph-brand">TEZ Водитель</span><span>●●●</span></div>
+        <div class="driver-app" id="driverApp"></div>
+      </div>
+    </section>
+
+    <section class="col col-dispatch hidden" id="colDispatch">
+      <div class="panel" id="dispatch"></div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ============ TELEGRAM WEBAPP ============ */
+const TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+let tgUser = null;
+if(TG){
+  try {
+    TG.ready();
+    TG.expand();
+    if(TG.setHeaderColor) TG.setHeaderColor('#0B0B0C');
+    if(TG.setBackgroundColor) TG.setBackgroundColor('#0B0B0C');
+    if(TG.initDataUnsafe && TG.initDataUnsafe.user) tgUser = TG.initDataUnsafe.user;
+  } catch(e){ console.warn('TG init error', e); }
+}
+
+/* ============ CONSTANTS ============ */
+const DEMO_PHONE = '013585958';
+const DEMO_PASS  = 'KING0770';
+
+const TARIFFS = {
+  economy:  { name:'Эконом',   base:5,  rate:2,   min:8  },
+  comfort:  { name:'Комфорт',  base:8,  rate:3,   min:12 },
+  intercity:{ name:'Межгород', base:20, rate:1.8, min:50 }
+};
+const PLACES = [
+  { name:'Душанбе — Центр (площадь Дусти)', lat:38.5730, lon:68.7860 },
+  { name:'Душанбе — Аэропорт',              lat:38.5433, lon:68.8250 },
+  { name:'Душанбе — Вокзал',                lat:38.5590, lon:68.7690 },
+  { name:'Душанбе — Мехргон',               lat:38.5890, lon:68.7620 },
+  { name:'Душанбе — Шохмансур',             lat:38.5500, lon:68.7900 },
+  { name:'Душанбе — 82-й микрорайон',       lat:38.5680, lon:68.8020 },
+  { name:'Гиссар — Центр',                  lat:38.5260, lon:68.5520 },
+  { name:'Гиссар — Крепость',               lat:38.5210, lon:68.5450 },
+  { name:'Гиссар — Шарора',                 lat:38.5020, lon:68.5780 },
+  { name:'Гиссар — Аэропорт',               lat:38.5120, lon:68.6730 }
+];
+const DRIVERS = [
+  { id:1, name:'Фаррух Р.', car:'Chevrolet Cobalt', color:'белый', plate:'0123 AB 02', rides:6, earn:96, rating:4.9, online:true, lat:38.5730, lon:68.7860, me:true },
+  { id:2, name:'Бахтиёр К.', car:'Daewoo Nexia', color:'серебро', plate:'0456 BC 02', rides:8, earn:131, rating:4.7, online:true, lat:38.5890, lon:68.7620 },
+  { id:3, name:'Шерзод А.', car:'Toyota Camry', color:'чёрный', plate:'0789 CD 02', rides:5, earn:118, rating:4.8, online:true, lat:38.5500, lon:68.7900 },
+  { id:4, name:'Умед Н.', car:'Hyundai Sonata', color:'белый', plate:'0321 DE 02', rides:7, earn:104, rating:4.6, online:true, lat:38.5433, lon:68.8250 },
+  { id:5, name:'Далер С.', car:'Chevrolet Lacetti', color:'синий', plate:'0654 EF 02', rides:3, earn:41, rating:4.5, online:false, lat:38.5260, lon:68.5520 }
+];
+const CAR_SVG = '<svg viewBox="0 0 24 24"><path d="M5 11l1.5-4.5h11L19 11h1.5c.8 0 1.5.7 1.5 1.5V17c0 .6-.4 1-1 1h-1c-.6 0-1-.4-1-1v-1H5v1c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1v-4.5C2 11.7 2.7 11 3.5 11H5zm1.7 0h10.6L16.4 8H7.6L6.7 11zM6 14.5a1 1 0 100-2 1 1 0 000 2zm12 0a1 1 0 100-2 1 1 0 000 2z"/></svg>';
+const PERSON_SVG = '<svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 100 6 3 3 0 000-6zm-7 9c0-1.5 1.5-3 3-3h8c1.5 0 3 1.5 3 3v3h-2v6h-2v-6h-2v6h-2v-6H7v-3z"/></svg>';
+
+const state = {
+  role:'client',
+  clientStage:'order',
+  from:{ name:'Душанбе — Центр (площадь Дусти)', lat:38.5730, lon:68.7860 },
+  to:{   name:'Душанбе — Аэропорт',              lat:38.5433, lon:68.8250 },
+  me:{   lat:38.5730, lon:68.7860 },
+  tariff:'economy', payment:'cash',
+  distance:6.0, myOrder:null,
+  driverOnline:false, driverStage:'offline', incomingOrder:null, incomingTimer:45,
+  orders:[
+    { id:1048, time:'10:22', from:'Аэропорт', to:'Мехргон', tariff:'comfort', price:13, driver:'Фаррух Р.', status:'done' },
+    { id:1047, time:'09:44', from:'Центр (площадь Дусти)', to:'Шохмансур', tariff:'economy', price:25, driver:'Умед Н.', status:'done' },
+    { id:1046, time:'09:06', from:'Вокзал', to:'Гиссар — Крепость', tariff:'intercity', price:80, driver:'Шерзод А.', status:'done' },
+    { id:1045, time:'08:28', from:'82-й микрорайон', to:'Аэропорт', tariff:'economy', price:8, driver:'Бахтиёр К.', status:'done' },
+    { id:1044, time:'07:50', from:'Мехргон', to:'Центр (площадь Дусти)', tariff:'economy', price:8, driver:'Фаррух Р.', status:'done' }
+  ]
+};
+let nextOrderId = 1049;
+let loginRole = null;
+let tapCount = 0, tapTimer = null;
+
+function q(s){ return document.querySelector(s); }
+function qa(s){ return document.querySelectorAll(s); }
+function calcPrice(k, km){ const t=TARIFFS[k]; return Math.max(t.min, Math.round(t.base + t.rate*km)); }
+function findPlace(n){ return PLACES.find(p=>p.name===n) || PLACES[0]; }
+function nowHM(){ const d=new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+let toastTimer;
+function toast(m){
+  const el=q('#toast'); if(!el) return;
+  el.textContent=m; el.hidden=false;
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.hidden=true,2200);
+}
+
+/* ============ TELEGRAM HELLO ============ */
+function showTgHello(){
+  if(!tgUser) return;
+  const box = q('#tgHello'); if(!box) return;
+  box.classList.remove('hidden');
+  q('#tgName').textContent = (tgUser.first_name || '') + ' ' + (tgUser.last_name || '');
+  q('#tgUser').textContent = tgUser.username ? '@' + tgUser.username : 'ID ' + tgUser.id;
+  const img = q('#tgAvatar');
+  if(tgUser.photo_url){ img.src = tgUser.photo_url; img.style.display = ''; }
+  else { img.style.display = 'none'; }
+}
+showTgHello();
+
+/* ============ AUTH ============ */
+function tapLogoClick(e){ if(e) e.preventDefault(); handleTap(); }
+function tapLogoTouch(e){ if(e) e.preventDefault(); handleTap(); }
+function handleTap(){
+  tapCount++;
+  clearTimeout(tapTimer);
+  tapTimer = setTimeout(()=>{ tapCount = 0; }, 1200);
+  if(tapCount >= 5){
+    tapCount = 0;
+    q('#roleBtns').classList.add('hidden');
+    q('#loginForm').classList.add('hidden');
+    q('#adminForm').classList.remove('hidden');
+  }
+}
+function pickRole(e, role){
+  if(e){ e.preventDefault(); e.stopPropagation(); }
+  loginRole = role;
+  // Если открыто в Telegram — сразу входим без логина
+  if(TG && tgUser){
+    enterApp(role);
+    return;
+  }
+  // Иначе — показываем форму логина
+  q('#roleBtns').classList.add('hidden');
+  q('#adminForm').classList.add('hidden');
+  q('#loginForm').classList.remove('hidden');
+  q('#loginErr').textContent = '';
+  q('#inpPhone').value = DEMO_PHONE;
+  q('#inpPass').value  = DEMO_PASS;
+}
+function backToRoles(e){
+  if(e){ e.preventDefault(); }
+  loginRole = null;
+  q('#roleBtns').classList.remove('hidden');
+  q('#loginForm').classList.add('hidden');
+  q('#adminForm').classList.add('hidden');
+  q('#loginErr').textContent = '';
+  q('#admErr').textContent = '';
+}
+function doLogin(e){
+  if(e){ e.preventDefault(); }
+  const phone = q('#inpPhone').value.trim();
+  const pass  = q('#inpPass').value.trim();
+  const err   = q('#loginErr');
+  if(phone !== DEMO_PHONE){ err.textContent = 'Неверный номер'; return; }
+  if(pass  !== DEMO_PASS ){ err.textContent = 'Неверный пароль'; return; }
+  err.textContent = '';
+  enterApp(loginRole);
+}
+function doAdminLogin(e){
+  if(e){ e.preventDefault(); }
+  const phone = q('#admPhone').value.trim();
+  const pass  = q('#admPass').value.trim();
+  const err   = q('#admErr');
+  if(phone !== DEMO_PHONE){ err.textContent = 'Неверный номер'; return; }
+  if(pass  !== DEMO_PASS ){ err.textContent = 'Неверный пароль'; return; }
+  err.textContent = '';
+  enterApp('dispatch');
+}
+function regInfo(e){ if(e) e.preventDefault(); toast('Регистрация — демо'); }
+
+function showOnly(role){
+  q('#colClient').classList.add('hidden');
+  q('#colDriver').classList.add('hidden');
+  q('#colDispatch').classList.add('hidden');
+  if(role === 'client'){
+    q('#colClient').classList.remove('hidden');
+    q('#roleTag').innerHTML = 'Роль: <b>Пассажир</b>';
+  } else if(role === 'driver'){
+    q('#colDriver').classList.remove('hidden');
+    q('#roleTag').innerHTML = 'Роль: <b>Водитель</b>';
+  } else if(role === 'dispatch'){
+    q('#colDispatch').classList.remove('hidden');
+    q('#roleTag').innerHTML = 'Роль: <b>Диспетчер</b>';
+  }
+  // В Telegram скрываем верхнюю панель, чтобы не занимать место
+  if(TG){
+    q('.top').style.display = 'none';
+  }
+}
+function enterApp(role){
+  state.role = role;
+  q('#loginScreen').classList.add('hidden');
+  q('#appWrap').classList.remove('hidden');
+  showOnly(role);
+  toast(role === 'dispatch' ? '👑 Диспетчер' : (role === 'driver' ? '🚗 Водитель' : '🚕 Пассажир'));
+  setTimeout(()=>{
+    if(role === 'client'){ initClientMap(); }
+    if(role === 'dispatch') initDispMap();
+  }, 150);
+}
+function logout(e){
+  if(e) e.preventDefault();
+  q('#loginScreen').classList.remove('hidden');
+  q('#appWrap').classList.add('hidden');
+  if(window._clientMap){ window._clientMap.remove(); window._clientMap=null; }
+  if(window._dispMap){ window._dispMap.remove(); window._dispMap=null; }
+  backToRoles();
+  toast('Вы вышли');
+}
+
+/* ============ MAP ============ */
+let clientClickMode = 'from';
+
+function youIcon(){
+  return L.divIcon({
+    className:'',
+    html:'<div class="mk-you"><div class="leg"></div><div class="box">'+PERSON_SVG+'</div><div class="shadow"></div></div>',
+    iconSize:[44,56],
+    iconAnchor:[22,56]
+  });
+}
+function toIcon(){
+  return L.divIcon({
+    className:'',
+    html:'<div class="mk-b"></div>',
+    iconSize:[26,26],
+    iconAnchor:[13,26]
+  });
+}
+
+function initClientMap(){
+  if(window._clientMap) return;
+  const el = document.getElementById('clientMap'); if(!el || typeof L === 'undefined') return;
+  const map = L.map('clientMap',{zoomControl:false,attributionControl:false}).setView([state.from.lat, state.from.lon], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+  window._markFrom = L.marker([state.from.lat, state.from.lon], {
+    icon: youIcon(),
+    draggable: true,
+    zIndexOffset: 1000
+  }).addTo(map);
+  window._markFrom.on('drag', (e)=>{
+    const p = e.target.getLatLng();
+    state.from = { name:'Точка A (перетащена)', lat:p.lat, lon:p.lng };
+    updateDistance(); drawClientRoute();
+  });
+  window._markFrom.on('dragend', ()=>{ renderClient(); });
+
+  window._markTo = L.marker([state.to.lat, state.to.lon], { icon: toIcon(), draggable:true }).addTo(map);
+  window._markTo.on('drag', (e)=>{ const p=e.target.getLatLng(); state.to = { name:'Точка B (перетащена)', lat:p.lat, lon:p.lng }; updateDistance(); drawClientRoute(); });
+  window._markTo.on('dragend', ()=>{ renderClient(); });
+
+  window._clientRoute = L.polyline([[state.from.lat,state.from.lon],[state.to.lat,state.to.lon]], {color:'#111',weight:3,dashArray:'8 8'}).addTo(map);
+
+  map.on('click', (e)=>{
+    if(state.clientStage !== 'order') return;
+    const {lat, lng} = e.latlng;
+    if(clientClickMode === 'from'){
+      state.from = { name:'Точка A на карте', lat, lon:lng };
+      if(window._markFrom) window._markFrom.setLatLng([lat,lng]);
+      clientClickMode = 'to';
+      toast('Точка A — откуда');
+    } else {
+      state.to = { name:'Точка B на карте', lat, lon:lng };
+      if(window._markTo) window._markTo.setLatLng([lat,lng]);
+      clientClickMode = 'from';
+      toast('Точка B — куда');
+    }
+    updateDistance(); drawClientRoute(); renderClient();
+  });
+
+  const btn = q('#locateBtn');
+  if(btn) btn.onclick = ()=>{
+    if(window._clientMap) window._clientMap.setView([state.from.lat, state.from.lon], 15);
+    locateMe();
+  };
+
+  window._clientMap = map;
+  drawClientRoute();
+}
+function drawClientRoute(){
+  const map = window._clientMap; if(!map) return;
+  if(window._clientRoute) map.removeLayer(window._clientRoute);
+  window._clientRoute = L.polyline([[state.from.lat,state.from.lon],[state.to.lat,state.to.lon]], {color:'#111',weight:3,dashArray:'8 8'}).addTo(map);
+  const bounds = L.latLngBounds([[state.from.lat,state.from.lon],[state.to.lat,state.to.lon]]);
+  map.fitBounds(bounds, {padding:[60,60], maxZoom:15});
+}
+function locateMe(){
+  if(!navigator.geolocation){ toast('Геолокация недоступна'); return; }
+  navigator.geolocation.getCurrentPosition(
+    (pos)=>{
+      const lat = pos.coords.latitude, lon = pos.coords.longitude;
+      state.from = { name:'Моё местоположение', lat, lon };
+      if(window._markFrom) window._markFrom.setLatLng([lat,lon]);
+      if(window._clientMap) window._clientMap.setView([lat,lon], 16);
+      updateDistance(); drawClientRoute(); renderClient();
+      toast('📍 Ваше местоположение');
+    },
+    ()=>{ toast('Не удалось получить геолокацию'); },
+    { enableHighAccuracy:true, timeout:6000, maximumAge:60000 }
+  );
+}
+function initDispMap(){
+  const el = document.getElementById('dispMap');
+  if(!el || typeof L === 'undefined') return;
+  if(window._dispMap){ window._dispMap.remove(); window._dispMap=null; }
+  const map=L.map('dispMap',{zoomControl:true,attributionControl:false}).setView([38.5600,68.7300],11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+  DRIVERS.forEach(d=>{
+    const cls=!d.online?'off':'';
+    L.marker([d.lat,d.lon],{icon:L.divIcon({className:'',html:'<div class="mk-car '+cls+'">'+CAR_SVG+'</div>',iconSize:[36,36],iconAnchor:[18,18]})}).addTo(map);
+  });
+  window._dispMap = map;
+}
+function parseAddress(text){
+  const t = (text || '').trim();
+  if(!t) return null;
+  const exact = PLACES.find(p => p.name.toLowerCase() === t.toLowerCase());
+  if(exact) return { name: exact.name, lat: exact.lat, lon: exact.lon };
+  const partial = PLACES.find(p => p.name.toLowerCase().includes(t.toLowerCase()) || t.toLowerCase().includes(p.name.toLowerCase().replace('душанбе — ','').replace('гиссар — ','')));
+  if(partial) return { name: t, lat: partial.lat, lon: partial.lon };
+  let h = 0; for(let i=0;i<t.length;i++) h = (h*31 + t.charCodeAt(i)) & 0xffff;
+  const lat = 38.5500 + ((h % 1000) / 1000) * 0.06 - 0.03;
+  const lon = 68.7800 + (((h>>3) % 1000) / 1000) * 0.10 - 0.05;
+  return { name: t, lat: +lat.toFixed(5), lon: +lon.toFixed(5), custom:true };
+}
+
+/* ============ CLIENT ============ */
+function renderClient(){
+  const sheet=q('#clientSheet'); if(!sheet) return;
+  const s=state.clientStage;
+  if(s==='order'){
+    sheet.innerHTML=`
+      <div class="grab"></div><h3>Куда поедем?</h3>
+      <div class="field"><span class="dot a"></span>
+        <input id="inpFrom" placeholder="Откуда" value="${state.from.name.replace(/"/g,'&quot;')}">
+      </div>
+      <div class="field"><span class="dot b"></span>
+        <input id="inpTo" placeholder="Куда" value="${state.to.name.replace(/"/g,'&quot;')}">
+      </div>
+      <div class="hint">💡 Введите адрес, тапните по карте или перетащите маркер «Вы»</div>
+      <div class="tariffs">${Object.entries(TARIFFS).map(([k,t])=>`
+        <div class="tariff ${state.tariff===k?'sel':''}" data-tariff="${k}">
+          <b>${t.name}</b><span>${state.distance} км</span><span class="p">${calcPrice(k,state.distance)} с.</span>
+        </div>`).join('')}</div>
+      <div class="pay">
+        <span class="chip ${state.payment==='cash'?'sel':''}" data-pay="cash">Наличные</span>
+        <span class="chip ${state.payment==='card'?'sel':''}" data-pay="card">Карта</span>
+        <span class="chip ${state.payment==='alif'?'sel':''}" data-pay="alif">Алиф</span>
+      </div>
+      <button class="btn" id="btnOrder">Заказать · ${calcPrice(state.tariff,state.distance)} сомони</button>`;
+    const inpFrom = q('#inpFrom'), inpTo = q('#inpTo');
+    function commitFrom(){ const p=parseAddress(inpFrom.value); if(p){state.from=p; if(window._markFrom) window._markFrom.setLatLng([p.lat,p.lon]); updateDistance(); drawClientRoute(); renderClient();} }
+    function commitTo(){   const p=parseAddress(inpTo.value);   if(p){state.to=p;   if(window._markTo) window._markTo.setLatLng([p.lat,p.lon]); updateDistance(); drawClientRoute(); renderClient();} }
+    inpFrom.addEventListener('blur', commitFrom);
+    inpTo.addEventListener('blur', commitTo);
+    sheet.querySelectorAll('[data-tariff]').forEach(b=>b.onclick=()=>{state.tariff=b.dataset.tariff;renderClient();});
+    sheet.querySelectorAll('[data-pay]').forEach(b=>b.onclick=()=>{state.payment=b.dataset.pay;renderClient();});
+    q('#btnOrder').onclick=placeOrder;
+  } else if(s==='searching'){
+    sheet.innerHTML=`<div class="grab"></div>
+      <div class="status-big"><span class="pulse"></span>Ищем водителя…</div>
+      <div class="muted">Обычно занимает 30 секунд</div>
+      <div class="spinner"></div>
+      <div class="muted" style="text-align:center">Заказ #${state.myOrder.id} · ${state.myOrder.price} сомони</div>
+      <button class="btn ghost mt" id="btnCancel">Отменить заказ</button>`;
+    q('#btnCancel').onclick=()=>{
+      state.orders.unshift({id:state.myOrder.id,time:nowHM(),from:state.from.name,to:state.to.name,tariff:state.tariff,price:state.myOrder.price,driver:'—',status:'cancel'});
+      state.clientStage='order'; state.myOrder=null; renderClient(); toast('Отменён');
+    };
+  } else if(['found','onway','arrived','ride'].includes(s)){
+    const d=state.myOrder.driver;
+    const m={found:['Водитель найден','Подъедет через 4 мин'],onway:['Водитель в пути','Подъедет через 2 мин'],arrived:['Водитель на месте','Выходите к машине'],ride:['В пути','Следуем к месту назначения']};
+    const [t,sub]=m[s];
+    sheet.innerHTML=`<div class="grab"></div>
+      <div class="status-big">${t}</div><div class="muted" style="margin-bottom:10px">${sub}</div>
+      <div class="drv-card"><div class="ava">${d.name[0]}</div>
+        <div style="flex:1"><b>${d.name}</b>
+          <div class="muted">${d.car}, ${d.color} · ${d.rides} поездок · ⭐ ${d.rating}</div>
+          <span class="plate">${d.plate}</span></div></div>
+      <div class="btns"><button class="btn ghost" id="btnChat">💬 Чат</button><button class="btn ghost" id="btnCall">📞 Позвонить</button></div>
+      ${s==='ride'?'':`<button class="btn red mt" id="btnCancel2">Отменить заказ</button>`}`;
+    q('#btnChat').onclick=()=>toast('Чат (демо)');
+    q('#btnCall').onclick=()=>toast('Звонок (демо)');
+    const c2=q('#btnCancel2'); if(c2) c2.onclick=()=>{
+      state.orders.unshift({id:state.myOrder.id,time:nowHM(),from:state.from.name,to:state.to.name,tariff:state.tariff,price:state.myOrder.price,driver:d.name,status:'cancel'});
+      state.clientStage='order'; state.myOrder=null; state.driverStage=state.driverOnline?'idle':'offline'; renderClient(); toast('Отменён');
+    };
+  } else if(s==='done'){
+    sheet.innerHTML=`<div class="grab"></div>
+      <div class="status-big">Поездка завершена</div>
+      <div class="muted">Спасибо, что выбрали TEZ TAXI</div>
+      <div style="display:flex;justify-content:space-between;margin:18px 0;font-size:15px"><span>Сумма:</span><b>${state.myOrder.price} сомони</b></div>
+      <div class="muted" style="text-align:center;margin-bottom:8px">Оцените водителя</div>
+      <div class="stars" id="stars">${[1,2,3,4,5].map(i=>`<button data-i="${i}">★</button>`).join('')}</div>
+      <button class="btn ghost" id="btnSkip">Пропустить</button>`;
+    const stars=sheet.querySelectorAll('#stars button');
+    stars.forEach(b=>b.onclick=()=>stars.forEach(x=>x.classList.toggle('on',+x.dataset.i<=+b.dataset.i)));
+    q('#btnSkip').onclick=finishClient;
+  }
+}
+function updateDistance(){
+  const A=state.from,B=state.to;
+  const dLat=(B.lat-A.lat)*111;
+  const dLon=(B.lon-A.lon)*111*Math.cos(A.lat*Math.PI/180);
+  state.distance=+Math.max(0.5,Math.sqrt(dLat*dLat+dLon*dLon)).toFixed(1);
+}
+function placeOrder(){
+  const price=calcPrice(state.tariff,state.distance);
+  state.myOrder={id:nextOrderId++,from:state.from,to:state.to,tariff:state.tariff,price,status:'search',driver:null};
+  state.clientStage='searching';
+  if(state.driverOnline && state.driverStage==='idle'){
+    state.driverStage='incoming'; state.incomingOrder=state.myOrder; state.incomingTimer=45;
+    renderClient(); renderDriver(); startIncomingTimer(); return;
+  }
+  renderClient(); toast('Заказ создан: '+price+' сомони');
+}
+function finishClient(){
+  if(state.myOrder) state.orders.unshift({id:state.myOrder.id,time:nowHM(),from:state.from.name,to:state.to.name,tariff:state.tariff,price:state.myOrder.price,driver:state.myOrder.driver?.name||'—',status:'done'});
+  state.clientStage='order'; state.myOrder=null; state.driverStage=state.driverOnline?'idle':'offline';
+  renderClient(); toast('Спасибо!');
+}
+
+/* ============ DRIVER ============ */
+function pickupWaitingOrder(){
+  if(state.clientStage === 'searching' && state.myOrder && state.driverStage === 'idle'){
+    state.driverStage='incoming'; state.incomingOrder = state.myOrder; state.incomingTimer = 45;
+    renderDriver(); startIncomingTimer(); toast('Новый заказ!');
+  }
+}
+let incomingTimerId=null;
+function startIncomingTimer(){
+  clearInterval(incomingTimerId);
+  incomingTimerId=setInterval(()=>{
+    state.incomingTimer--;
+    const bar=q('#incomingTimer i');
+    const lbl=q('#timerLabel');
+    if(bar) bar.style.width=(state.incomingTimer/45*100)+'%';
+    if(lbl) lbl.textContent=state.incomingTimer+' сек на ответ';
+    if(state.incomingTimer<=0){
+      clearInterval(incomingTimerId);
+      if(state.driverStage==='incoming'){
+        state.driverStage='idle'; state.incomingOrder=null;
+        renderDriver(); toast('Заказ упущен');
+      }
+    }
+  },1000);
+}
+function renderDriver(){
+  const app=q('#driverApp'); if(!app) return;
+  const me=DRIVERS[0]; const s=state.driverStage;
+  let body='';
+  if(s==='offline') body=`<div class="empty"><div class="big">◐</div>Вы не на линии.<br>Включите «На линии», чтобы получать заказы.</div>`;
+  else if(s==='idle') body=`<div class="empty"><div class="dot-wait"></div>Ждём заказы рядом с вами…<br>Закажите такси в приложении клиента — заказ придёт сюда.</div>`;
+  else if(s==='incoming'){
+    const o=state.incomingOrder;
+    body=`<div class="d-card new"><h4>🔔 Новый заказ #${o.id}</h4>
+      <div class="route"><div>${o.from.name}</div><div>${o.to.name}</div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span class="muted">${state.distance} км · ${TARIFFS[o.tariff].name}</span>
+        <span class="price-big">${o.price} с.</span></div>
+      <div class="timer" id="incomingTimer"><i style="width:${state.incomingTimer/45*100}%"></i></div>
+      <div class="muted" id="timerLabel" style="text-align:center;margin-top:6px">${state.incomingTimer} сек на ответ</div>
+      <div class="btns"><button class="btn red" id="btnReject">Отклонить</button><button class="btn green" id="btnAccept">Принять</button></div></div>`;
+  } else if(['accepted','onway','arrived','ride'].includes(s)){
+    const o=state.incomingOrder||state.myOrder;
+    body=`<div class="d-card"><h4>Заказ #${o.id} · принят</h4>
+      <div class="route"><div>${o.from.name}</div><div>${o.to.name}</div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span class="muted">${state.distance} км</span><span class="price-big">${o.price} с.</span></div>
+      <div class="btns" style="flex-direction:column">
+        ${s==='accepted'?'<button class="btn" id="b1">🚗 Я выехал</button>':''}
+        ${s==='onway'?'<button class="btn" id="b2">📍 Я рядом</button>':''}
+        ${s==='arrived'?'<button class="btn" id="b3">✅ Забрал клиента</button>':''}
+        ${s==='ride'?'<button class="btn green" id="b4">🏁 Завершить поездку</button>':''}
+        <button class="btn ghost" id="btnChatD">💬 Чат с клиентом</button>
+      </div></div>`;
+  }
+  app.innerHTML=`<div class="d-head"><div class="ava">${me.name[0]}</div>
+    <div><b>${me.name}</b><span>${me.car}, ${me.color} · ${me.plate}</span></div>
+    <div class="online"><span>${state.driverOnline?'На линии':'Не на линии'}</span>
+      <div class="switch ${state.driverOnline?'on':''}" id="swOnline"></div></div></div>
+    <div class="stats">
+      <div class="stat"><b>${me.rides}</b><span>Поездок</span></div>
+      <div class="stat"><b>${me.earn} с.</b><span>Заработок</span></div>
+      <div class="stat"><b>★ ${me.rating}</b><span>Рейтинг</span></div></div>
+    ${body}
+    <div style="margin-top:16px">
+      <h4 style="color:var(--y);font-size:12px;text-transform:uppercase;letter-spacing:.09em;margin-bottom:8px;font-weight:800">Последние поездки</h4>
+      <div class="d-list">
+        <div class="li"><span>10:22 · Аэропорт → Мехргон</span><b>12 с.</b></div>
+        <div class="li"><span>07:50 · Мехргон → Центр (площадь Дусти)</span><b>7 с.</b></div>
+      </div>
+      <div class="muted" style="margin-top:10px">Комиссия сервиса 10% уже вычтена</div>
+    </div>`;
+  q('#swOnline').onclick=()=>{
+    if(['incoming','accepted','onway','arrived','ride'].includes(state.driverStage)){toast('Сначала завершите заказ');return;}
+    state.driverOnline=!state.driverOnline;
+    state.driverStage=state.driverOnline?'idle':'offline';
+    renderDriver(); toast(state.driverOnline?'На линии':'Ушли с линии');
+    if(state.driverOnline) setTimeout(pickupWaitingOrder, 300);
+  };
+  const br=q('#btnReject'); if(br) br.onclick=()=>{ clearInterval(incomingTimerId); state.driverStage='idle'; state.incomingOrder=null; renderDriver(); toast('Отклонён'); };
+  const ba=q('#btnAccept'); if(ba) ba.onclick=()=>{
+    clearInterval(incomingTimerId); state.driverStage='accepted'; state.clientStage='found';
+    if(state.myOrder) state.myOrder.driver=me;
+    renderDriver(); renderClient(); toast('Заказ принят');
+  };
+  const b1=q('#b1'); if(b1) b1.onclick=()=>{state.driverStage='onway';state.clientStage='onway';renderDriver();renderClient();};
+  const b2=q('#b2'); if(b2) b2.onclick=()=>{state.driverStage='arrived';state.clientStage='arrived';renderDriver();renderClient();};
+  const b3=q('#b3'); if(b3) b3.onclick=()=>{state.driverStage='ride';state.clientStage='ride';renderDriver();renderClient();};
+  const b4=q('#b4'); if(b4) b4.onclick=()=>{
+    state.driverStage='idle'; state.clientStage='done';
+    const o=state.incomingOrder;
+    if(o&&!state.orders.find(x=>x.id===o.id)) state.orders.unshift({id:o.id,time:nowHM(),from:o.from.name,to:o.to.name,tariff:o.tariff,price:o.price,driver:me.name,status:'done'});
+    state.incomingOrder=null; renderDriver(); renderClient(); toast('Поездка завершена');
+  };
+  const bc=q('#btnChatD'); if(bc) bc.onclick=()=>toast('Чат (демо)');
+}
+
+/* ============ DISPATCH ============ */
+function renderDispatch(){
+  const panel=q('#dispatch'); if(!panel) return;
+  const today=state.orders.length;
+  const active=state.orders.filter(o=>o.status==='search').length;
+  const revenue=state.orders.filter(o=>o.status==='done').reduce((s,o)=>s+o.price,0);
+  const onlineDrivers=DRIVERS.filter(d=>d.online).length;
+  const lbl={search:'Ищем',done:'Завершён',cancel:'Отменён'};
+  panel.innerHTML=`<div class="panel-title">ПАНЕЛЬ ДИСПЕТЧЕРА</div>
+    <div class="kpis">
+      <div class="kpi"><span>Заказов сегодня</span><b>${today}</b></div>
+      <div class="kpi"><span>Активные сейчас</span><b class="y">${active}</b></div>
+      <div class="kpi"><span>Выручка сегодня</span><b>${revenue} с.</b></div>
+      <div class="kpi"><span>Водителей на линии</span><b>${onlineDrivers} / ${DRIVERS.length}</b></div></div>
+    <div class="box"><div class="box-h"><h3>Заказ по телефону</h3></div>
+      <div class="form-grid">
+        <label>Телефон<input class="inp" placeholder="+992" id="fPhone"></label>
+        <label>Откуда<select class="inp" id="fFrom">${PLACES.map(p=>`<option>${p.name}</option>`).join('')}</select></label>
+        <label>Куда<select class="inp" id="fTo">${PLACES.map((p,i)=>`<option ${i===1?'selected':''}>${p.name}</option>`).join('')}</select></label>
+        <label>Тариф<select class="inp" id="fTariff">${Object.entries(TARIFFS).map(([k,t])=>`<option value="${k}">${t.name}</option>`).join('')}</select></label></div>
+      <button class="btn mt" id="btnDispOrder">Создать заказ</button></div>
+    <div class="box"><div class="box-h"><h3>Тарифы (сомони)</h3><span class="sub">Изменения сразу видны у клиента</span></div>
+      <div class="tariff-set">${Object.entries(TARIFFS).map(([k,t])=>`
+        <div class="t"><b>${t.name}</b>
+          <label>Посадка<input type="number" data-tf="${k}" data-f="base" value="${t.base}"></label>
+          <label>За 1 км<input type="number" step="0.1" data-tf="${k}" data-f="rate" value="${t.rate}"></label>
+          <label>Минимум<input type="number" data-tf="${k}" data-f="min" value="${t.min}"></label></div>`).join('')}
+      </div></div>
+    <div class="box"><div class="box-h"><h3>Карта и водители</h3><span class="sub">● свободен</span></div>
+      <div id="dispMap"></div>
+      ${DRIVERS.map(d=>`<div class="drv-row"><div class="ava">${d.name[0]}</div>
+        <div style="flex:1"><b>${d.name}${d.me?' (водитель)':''}</b><small>${d.car}, ${d.color} · ${d.rides} поездок · ${d.earn} с.</small></div>
+        <span class="st ${d.online?'free':'done'}">${d.online?'Свободен':'Не на линии'}</span></div>`).join('')}
+    </div>
+    <div class="box"><div class="box-h"><h3>Заказы</h3><button class="btn sm dk" id="btnTestOrder">+ Тестовый заказ</button></div>
+      <div class="tbl-wrap"><table><thead><tr><th>№</th><th>Время</th><th>Маршрут</th><th>Тариф</th><th>Цена</th><th>Водитель</th><th>Статус</th></tr></thead><tbody>
+        ${state.orders.map(o=>`<tr><td class="num">${o.id}</td><td>${o.time}</td><td>${o.from} → ${o.to}</td><td>${TARIFFS[o.tariff]?.name||'—'}</td><td class="num">${o.price} с.</td><td>${o.driver||'—'}</td><td><span class="st ${o.status}">${lbl[o.status]||o.status}</span></td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  initDispMap();
+  q('#btnDispOrder').onclick=()=>{
+    const from=q('#fFrom').value, to=q('#fTo').value, tk=q('#fTariff').value;
+    const A=findPlace(from),B=findPlace(to);
+    const dLat=(B.lat-A.lat)*111, dLon=(B.lon-A.lon)*111*Math.cos(A.lat*Math.PI/180);
+    const km=+Math.max(0.5,Math.sqrt(dLat*dLat+dLon*dLon)).toFixed(1);
+    const price=calcPrice(tk,km);
+    state.orders.unshift({id:nextOrderId++,time:nowHM(),from,to,tariff:tk,price,driver:'—',status:'search'});
+    renderDispatch(); toast('Заказ: '+price+' сомони');
+  };
+  q('#btnTestOrder').onclick=()=>{
+    const from=PLACES[Math.floor(Math.random()*PLACES.length)].name;
+    const to=PLACES[Math.floor(Math.random()*PLACES.length)].name;
+    if(from===to) return;
+    const tks=Object.keys(TARIFFS), tk=tks[Math.floor(Math.random()*tks.length)];
+    const price=calcPrice(tk, 2+Math.random()*4);
+    state.orders.unshift({id:nextOrderId++,time:nowHM(),from,to,tariff:tk,price,driver:'—',status:'search'});
+    renderDispatch(); toast('Тестовый заказ создан');
+  };
+  panel.querySelectorAll('[data-tf]').forEach(inp=>{
+    inp.onchange=()=>{TARIFFS[inp.dataset.tf][inp.dataset.f]=+inp.value; if(state.clientStage==='order') renderClient(); toast('Тариф обновлён');};
+  });
+}
+
+/* ============ INIT ============ */
+updateDistance();
+</script>
+</body>
+</html>
