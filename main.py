@@ -797,7 +797,6 @@ async def rotate_order_to_next_driver(bot: Bot, order_id: int):
         await offer_order_to_driver(bot, order_id, next_driver, order_data)
 
 async def update_client_waiting(bot: Bot, chat_id: int, message_id: int, order_id: int):
-    """Обновляет сообщение «Ищем водителя...»"""
     start_time = datetime.now()
     while True:
         await asyncio.sleep(15)
@@ -807,14 +806,67 @@ async def update_client_waiting(bot: Bot, chat_id: int, message_id: int, order_i
             if not row or row[0] not in ('pending', 'scheduled'):
                 break
         elapsed = int((datetime.now() - start_time).total_seconds())
+        
+        # Создаем кнопку отмены прямо здесь
+        kb = InlineKeyboardBuilder()
+        kb.button(text="❌ Отменить заказ", callback_data="client_cancel:" + str(order_id))
+        
         try:
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"⏳ Ищем водителя...\nОжидайте.\n\n⏱ Прошло: {elapsed} сек."
+                text=f"⏳ Ищем водителя...\nОжидайте.\n\n⏱ Прошло: {elapsed} сек.",
+                reply_markup=kb.as_markup()  # <--- Добавили кнопку
             )
         except Exception:
             pass
+            async def send_actual_orders_on_online(bot: Bot, driver_id: int, driver_city: str):
+    """Отправляет свежие заказы водителю, который только что вышел на линию"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Берем только заказы в статусе pending/scheduled, созданные за последние 60 минут
+        cutoff = (datetime.now() - timedelta(minutes=60)).isoformat()
+        cur = await db.execute("""
+            SELECT id, from_lat, from_lon, distance, price, tariff, payment, comment, offered_drivers
+            FROM orders 
+            WHERE status IN ('pending', 'scheduled') AND created_at > ?
+            ORDER BY id DESC LIMIT 3
+        """, (cutoff,))
+        orders = await cur.fetchall()
+        
+        # Получаем город клиента для каждого заказа (проверка, что он в том же городе)
+        valid_orders = []
+        for o in orders:
+            cur = await db.execute("SELECT city FROM users WHERE user_id = (SELECT client_id FROM orders WHERE id=?)", (o[0],))
+            crow = await cur.fetchone()
+            if crow and crow[0] == driver_city:
+                valid_orders.append(o)
+
+    if not valid_orders:
+        return  # Если заказов нет, ничего не отправляем
+
+    for order in valid_orders:
+        order_id, o_lat, o_lon, dist, price, tariff, payment, comment, offered_raw = order
+        
+        # Проверяем, не отправляли ли уже этот заказ этому водителю
+        offered_ids = [int(x) for x in (offered_raw or "").split(",") if x.strip()]
+        if driver_id in offered_ids:
+            continue
+
+        # Добавляем водителя в список тех, кому предложили
+        offered_ids.append(driver_id)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE orders SET offered_drivers=? WHERE id=?", (",".join(map(str, offered_ids)), order_id))
+            await db.commit()
+
+        # Формируем данные и отправляем
+        order_data = {
+            "tariff": TARIFFS[tariff]["name"] if tariff in TARIFFS else tariff,
+            "distance": round(dist or 0, 1),
+            "payment": "💵 Наличные" if payment == "cash" else "💳 Картой",
+            "price": price,
+            "comment": comment or ""
+        }
+        await offer_order_to_driver(bot, order_id, driver_id, order_data)
 
 async def notify_nearby_drivers(bot: Bot, order_id: int, from_lat: float, from_lon: float, city: str):
     """Пингует водителей в радиусе NEAR_RADIUS от заказа"""
@@ -1650,8 +1702,6 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
         await db.commit()
     await state.clear()
     await log_action(call.from_user.id, "order_created", "id=" + str(order_id) + " price=" + str(data["price"]))
-    builder = InlineKeyboardBuilder()
-    builder.button(text="❌ Отменить заказ", callback_data="client_cancel:" + str(order_id))
     pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
     eta = estimate_minutes(data["distance"])
     
@@ -1661,7 +1711,6 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     else:
         await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n⏳ " + str(eta) + " мин\n\n🔍 Ищем водителя...")
     
-    await call.message.answer("Ожидайте:", reply_markup=builder.as_markup())
 
     # === НОВАЯ ЛОГИКА РАССЫЛКИ ===
     async with aiosqlite.connect(DB_PATH) as db:
@@ -2187,7 +2236,13 @@ async def drv_location(message: Message, state: FSMContext):
     await log_action(uid, "driver_online")
     days = await days_left_subscription(uid)
     await message.answer("🟢 Вы на линии.\n⏳ Подписка: " + str(days) + " дн.", reply_markup=driver_menu(lang))
-    # Старый вызов send_pending_orders_to_driver удален. Теперь заказы приходят по таймеру/ротации.
+    
+    # Отправляем актуальные висящие заказы, если они есть
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT city FROM users WHERE user_id=?", (uid,))
+        row = await cur.fetchone()
+        if row and row[0]:
+            await send_actual_orders_on_online(message.bot, uid, row[0])
 
 @router.message(DriverReg.location)
 async def drv_location_wrong(message: Message):
