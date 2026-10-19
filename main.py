@@ -820,10 +820,9 @@ async def update_client_waiting(bot: Bot, chat_id: int, message_id: int, order_i
             )
         except Exception:
             pass
-            async def send_actual_orders_on_online(bot: Bot, driver_id: int, driver_city: str):
+async def send_actual_orders_on_online(bot: Bot, driver_id: int, driver_city: str):
     """Отправляет свежие заказы водителю, который только что вышел на линию"""
     async with aiosqlite.connect(DB_PATH) as db:
-        # Берем только заказы в статусе pending/scheduled, созданные за последние 60 минут
         cutoff = (datetime.now() - timedelta(minutes=60)).isoformat()
         cur = await db.execute("""
             SELECT id, from_lat, from_lon, distance, price, tariff, payment, comment, offered_drivers
@@ -833,7 +832,6 @@ async def update_client_waiting(bot: Bot, chat_id: int, message_id: int, order_i
         """, (cutoff,))
         orders = await cur.fetchall()
         
-        # Получаем город клиента для каждого заказа (проверка, что он в том же городе)
         valid_orders = []
         for o in orders:
             cur = await db.execute("SELECT city FROM users WHERE user_id = (SELECT client_id FROM orders WHERE id=?)", (o[0],))
@@ -842,23 +840,17 @@ async def update_client_waiting(bot: Bot, chat_id: int, message_id: int, order_i
                 valid_orders.append(o)
 
     if not valid_orders:
-        return  # Если заказов нет, ничего не отправляем
+        return
 
     for order in valid_orders:
         order_id, o_lat, o_lon, dist, price, tariff, payment, comment, offered_raw = order
-        
-        # Проверяем, не отправляли ли уже этот заказ этому водителю
         offered_ids = [int(x) for x in (offered_raw or "").split(",") if x.strip()]
         if driver_id in offered_ids:
             continue
-
-        # Добавляем водителя в список тех, кому предложили
         offered_ids.append(driver_id)
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE orders SET offered_drivers=? WHERE id=?", (",".join(map(str, offered_ids)), order_id))
             await db.commit()
-
-        # Формируем данные и отправляем
         order_data = {
             "tariff": TARIFFS[tariff]["name"] if tariff in TARIFFS else tariff,
             "distance": round(dist or 0, 1),
