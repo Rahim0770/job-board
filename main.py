@@ -19,7 +19,7 @@ from aiogram.types import (
     Message, CallbackQuery,
     ReplyKeyboardMarkup, KeyboardButton,
     ReplyKeyboardRemove, Contact,
-    BufferedInputFile
+    BufferedInputFile, FSInputFile
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -165,6 +165,9 @@ TARIFFS = {
 CAR_CLASSES = ["Эконом"]
 
 router = Router()
+
+# Словарь для хранения таймеров активных предложений
+active_offer_timers = {}
 
 class Reg(StatesGroup):
     phone = State()
@@ -559,17 +562,28 @@ async def init_db():
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        for col in ["first_name TEXT", "last_name TEXT", "car_class TEXT", "car_photo TEXT", "self_photo TEXT", "total_rides INTEGER DEFAULT 0", "approved INTEGER DEFAULT 0", "rejected INTEGER DEFAULT 0", "lang TEXT DEFAULT 'ru'", "call_phone TEXT", "banned INTEGER DEFAULT 0", "city TEXT DEFAULT ''", "ban_reason TEXT DEFAULT ''", "banned_by INTEGER", "banned_at TIMESTAMP", "first50_used INTEGER DEFAULT 0"]:
+        for col in ["first_name TEXT", "last_name TEXT", "car_class TEXT", "car_photo TEXT", "self_photo TEXT", "total_rides INTEGER DEFAULT 0", "approved INTEGER DEFAULT 0", "rejected INTEGER DEFAULT 0", "lang TEXT DEFAULT 'ru'", "call_phone TEXT", "banned INTEGER DEFAULT 0", "city TEXT DEFAULT ''", "ban_reason TEXT DEFAULT ''", "banned_by INTEGER", "banned_at TIMESTAMP", "first50_used INTEGER DEFAULT 0", "last_end_lat REAL", "last_end_lon REAL", "last_trip_end TIMESTAMP"]:
             try:
                 await db.execute("ALTER TABLE users ADD COLUMN " + col)
             except Exception:
                 pass
-        for col in ["promo TEXT DEFAULT ''", "discount INTEGER DEFAULT 0", "review TEXT DEFAULT ''", "scheduled_at TIMESTAMP", "comment TEXT DEFAULT ''", "recommended_price INTEGER DEFAULT 0", "negotiation_round INTEGER DEFAULT 0", "last_offer_by TEXT DEFAULT ''"]:
+        for col in ["promo TEXT DEFAULT ''", "discount INTEGER DEFAULT 0", "review TEXT DEFAULT ''", "scheduled_at TIMESTAMP", "comment TEXT DEFAULT ''", "recommended_price INTEGER DEFAULT 0", "negotiation_round INTEGER DEFAULT 0", "last_offer_by TEXT DEFAULT ''", "expires_at TIMESTAMP", "offered_drivers TEXT DEFAULT ''", "booked_for_driver INTEGER", "booked_at TIMESTAMP", "parent_order_id INTEGER"]:
             try:
                 await db.execute("ALTER TABLE orders ADD COLUMN " + col)
             except Exception:
                 pass
         await db.commit()
+
+async def cleanup_old_orders():
+    """Удаляет зависшие заказы старше 15 минут"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cutoff = (datetime.now() - timedelta(minutes=15)).isoformat()
+        await db.execute(
+            "UPDATE orders SET status='expired' WHERE status='pending' AND created_at < ?",
+            (cutoff,)
+        )
+        await db.commit()
+        logging.info("Старые заказы очищены")
 
 async def is_registered(uid):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -649,6 +663,367 @@ async def notify_admins(bot, text, only_super=False, only_helpers=False):
             await bot.send_message(a, text)
         except Exception:
             pass
+
+# ==================== НОВЫЕ ФУНКЦИИ (Логика такси) ====================
+
+async def send_seatbelt_voice(bot: Bot, driver_id: int, lang: str = "ru"):
+    """Голосовое: «Пристегните ремень»"""
+    voice_file = "voices/seatbelt_tj.ogg" if lang == "tj" else "voices/seatbelt_ru.ogg"
+    if not os.path.exists(voice_file):
+        logging.warning(f"Файл {voice_file} не найден!")
+        return
+    try:
+        await bot.send_voice(
+            chat_id=driver_id,
+            voice=FSInputFile(voice_file),
+            disable_notification=False
+        )
+    except Exception as e:
+        logging.warning(f"seatbelt voice error: {e}")
+
+async def send_arrived_voice(bot: Bot, driver_id: int, lang: str = "ru"):
+    """Голосовое: «Вы приехали. Оплата наличными»"""
+    voice_file = "voices/arrived_tj.ogg" if lang == "tj" else "voices/arrived_ru.ogg"
+    if not os.path.exists(voice_file):
+        logging.warning(f"Файл {voice_file} не найден!")
+        return
+    try:
+        await bot.send_voice(
+            chat_id=driver_id,
+            voice=FSInputFile(voice_file),
+            disable_notification=False
+        )
+    except Exception as e:
+        logging.warning(f"arrived voice error: {e}")
+
+async def offer_order_to_driver(bot: Bot, order_id: int, driver_id: int, order_data: dict):
+    """Отправляет заказ конкретному водителю с таймером 60 сек"""
+    text = (
+        f"🔔🔔🔔 **Новый заказ #{order_id}**\n\n"
+        f"🚕 {order_data['tariff']}\n"
+        f"📏 ~{order_data['distance']} км\n"
+        f"💵 {order_data['payment']}\n"
+        f"💰 Клиент предлагает: {order_data['price']} сомони\n"
+        f"💬 {order_data.get('comment') or 'Без комментария'}\n\n"
+        f"⏳ **У вас 60 секунд!**"
+    )
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"✅ Принять — {order_data['price']} сомони", callback_data=f"accept:{order_id}")
+    kb.button(text="💰 Предложить свою цену", callback_data=f"driver_offer:{order_id}")
+    kb.adjust(1)
+    
+    try:
+        msg = await bot.send_message(
+            driver_id, text,
+            reply_markup=kb.as_markup(),
+            parse_mode="Markdown",
+            disable_notification=False,
+            protect_content=True
+        )
+        
+        async def timeout_task():
+            await asyncio.sleep(60)
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute("SELECT status FROM orders WHERE id=?", (order_id,))
+                row = await cur.fetchone()
+                if row and row[0] in ('pending', 'scheduled'):
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    await rotate_order_to_next_driver(bot, order_id)
+        
+        if order_id in active_offer_timers:
+            active_offer_timers[order_id].cancel()
+        active_offer_timers[order_id] = asyncio.create_task(timeout_task())
+        
+    except Exception as e:
+        logging.error(f"send offer error {driver_id}: {e}")
+
+async def rotate_order_to_next_driver(bot: Bot, order_id: int):
+    """Передает заказ следующему водителю"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT * FROM orders WHERE id=?", (order_id,))
+        order = await cur.fetchone()
+        if not order:
+            return
+        # index 18 - status
+        if order[18] not in ('pending', 'scheduled'):
+            return
+        
+        client_id = order[1]
+        
+        cur = await db.execute("SELECT offered_drivers FROM orders WHERE id=?", (order_id,))
+        offered_raw = (await cur.fetchone())[0] or ""
+        offered_ids = [int(x) for x in offered_raw.split(",") if x.strip()]
+        
+        cur = await db.execute("SELECT city FROM users WHERE user_id=?", (client_id,))
+        crow = await cur.fetchone()
+        client_city = crow[0] if crow else ""
+        
+        cur = await db.execute(
+            "SELECT user_id FROM users WHERE role='driver' AND online=1 AND approved=1 AND banned=0 AND city=?",
+            (client_city,)
+        )
+        all_drivers = [r[0] for r in await cur.fetchall()]
+        next_drivers = [d for d in all_drivers if d not in offered_ids]
+        
+        if not next_drivers:
+            await db.execute("UPDATE orders SET status='expired' WHERE id=?", (order_id,))
+            await db.commit()
+            try:
+                await bot.send_message(client_id, "😔 Свободных водителей нет. Попробуйте позже.")
+            except Exception:
+                pass
+            return
+        
+        next_driver = next_drivers[0]
+        offered_ids.append(next_driver)
+        await db.execute(
+            "UPDATE orders SET offered_drivers=? WHERE id=?",
+            (",".join(map(str, offered_ids)), order_id)
+        )
+        await db.commit()
+        
+        tariff_key = order[9]
+        order_data = {
+            "tariff": TARIFFS[tariff_key]["name"] if tariff_key in TARIFFS else tariff_key,
+            "distance": round(order[7] or 0, 1),
+            "payment": "💵 Наличные" if order[10] == "cash" else "💳 Картой",
+            "price": order[8],
+            "comment": order[14] or ""
+        }
+        await offer_order_to_driver(bot, order_id, next_driver, order_data)
+
+async def update_client_waiting(bot: Bot, chat_id: int, message_id: int, order_id: int):
+    """Обновляет сообщение «Ищем водителя...»"""
+    start_time = datetime.now()
+    while True:
+        await asyncio.sleep(15)
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("SELECT status FROM orders WHERE id=?", (order_id,))
+            row = await cur.fetchone()
+            if not row or row[0] not in ('pending', 'scheduled'):
+                break
+        elapsed = int((datetime.now() - start_time).total_seconds())
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"⏳ Ищем водителя...\nОжидайте.\n\n⏱ Прошло: {elapsed} сек."
+            )
+        except Exception:
+            pass
+
+async def notify_nearby_drivers(bot: Bot, order_id: int, from_lat: float, from_lon: float, city: str):
+    """Пингует водителей в радиусе NEAR_RADIUS от заказа"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT user_id, driver_lat, driver_lon
+            FROM users
+            WHERE role='driver' AND online=1 AND approved=1 AND banned=0
+              AND driver_lat IS NOT NULL AND driver_lon IS NOT NULL AND city=?
+        """, (city,))
+        drivers = await cur.fetchall()
+    for driver_id, d_lat, d_lon in drivers:
+        km = haversine(from_lat, from_lon, d_lat, d_lon)
+        if km <= NEAR_RADIUS:
+            try:
+                await bot.send_message(
+                    driver_id,
+                    f"📍 **Заказ в {int(km*1000)} метрах от вас!**\n\nЗаказ #{order_id} рядом. 🚕",
+                    parse_mode="Markdown",
+                    disable_notification=False
+                )
+            except Exception:
+                pass
+
+async def find_next_order_for_driver(bot: Bot, driver_id: int, lat: float, lon: float):
+    """Ищет заказ в радиусе 2→5 км → весь город после завершения поездки"""
+    await asyncio.sleep(10 * 60)  # Ждём 10 минут
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT online, city FROM users WHERE user_id=? AND role='driver' AND banned=0 AND approved=1",
+            (driver_id,)
+        )
+        row = await cur.fetchone()
+        if not row or row[0] != 1:
+            return
+        driver_city = row[1]
+        cur = await db.execute(
+            "SELECT id FROM orders WHERE driver_id=? AND status IN ('accepted','arrived','started')",
+            (driver_id,)
+        )
+        if await cur.fetchone():
+            return
+    
+    for radius in [2.0, 5.0, None]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute("""
+                SELECT o.id, o.from_lat, o.from_lon, u.city, o.tariff, o.distance, o.payment, o.price, o.comment
+                FROM orders o JOIN users u ON u.user_id = o.client_id
+                WHERE o.status IN ('pending','scheduled') ORDER BY o.created_at ASC
+            """)
+            orders = await cur.fetchall()
+            for order in orders:
+                order_id, o_lat, o_lon, o_city, tariff, dist, payment, price, comment = order
+                if o_city != driver_city:
+                    continue
+                if radius is None or (o_lat and o_lon and haversine(lat, lon, o_lat, o_lon) <= radius):
+                    await offer_order_to_driver(bot, order_id, driver_id, {
+                        "tariff": TARIFFS[tariff]["name"] if tariff in TARIFFS else tariff,
+                        "distance": round(dist or 0, 1),
+                        "payment": "💵 Наличные" if payment == "cash" else "💳 Картой",
+                        "price": price, "comment": comment or ""
+                    })
+                    return
+    
+    try:
+        await bot.send_message(driver_id, "📍 Поездка завершена! Пока нет новых заказов рядом. Как только появятся — сразу пришлём 🚕")
+    except Exception:
+        pass
+
+async def monitor_active_trips(bot: Bot):
+    """Каждые 30 сек ищет водителей, которым осталось < 10 мин до конца поездки"""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute("""
+                    SELECT o.id, o.driver_id, o.to_lat, o.to_lon, o.distance
+                    FROM orders o JOIN users u ON u.user_id = o.driver_id
+                    WHERE o.status IN ('started','accepted','arrived')
+                      AND o.driver_id IS NOT NULL AND u.online=1 AND u.banned=0
+                """)
+                trips = await cur.fetchall()
+            
+            for order_id, driver_id, to_lat, to_lon, dist in trips:
+                async with aiosqlite.connect(DB_PATH) as db:
+                    cur = await db.execute(
+                        "SELECT id FROM orders WHERE booked_for_driver=? AND status='booked'", (driver_id,)
+                    )
+                    if await cur.fetchone():
+                        continue
+                # Если оставшееся расстояние меньше 5 км (примерно 10 мин при 30 км/ч)
+                if not dist or dist > 5:
+                    continue
+                await try_offer_chain_order(bot, driver_id, order_id, to_lat, to_lon)
+        except Exception as e:
+            logging.error(f"monitor_active_trips: {e}")
+
+async def try_offer_chain_order(bot: Bot, driver_id: int, parent_order_id: int, to_lat: float, to_lon: float):
+    """Предлагает следующий заказ рядом с точкой Б"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT id, from_lat, from_lon, distance, price, tariff, payment, comment
+            FROM orders WHERE status IN ('pending','scheduled') AND id != ?
+        """, (parent_order_id,))
+        candidates = await cur.fetchall()
+    if not candidates:
+        return
+    best, best_km = None, 999
+    for c in candidates:
+        if not c[1] or not c[2]:
+            continue
+        km = haversine(to_lat, to_lon, c[1], c[2])
+        if km < best_km:
+            best_km, best = km, c
+    if not best or best_km > 3.0:
+        return
+    order_id, o_lat, o_lon, dist, price, tariff, payment, comment = best
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE orders SET status='booked', booked_for_driver=?, booked_at=?, parent_order_id=? WHERE id=?",
+            (driver_id, datetime.now().isoformat(), parent_order_id, order_id)
+        )
+        await db.commit()
+    text = (
+        f"🎯 **Следующий заказ!**\n\n"
+        f"📍 До клиента: {best_km:.1f} км от точки Б\n"
+        f"🛣 В пути: ~{dist} км\n"
+        f"🚕 {TARIFFS[tariff]['name'] if tariff in TARIFFS else tariff}\n"
+        f"💵 {'Наличные' if payment == 'cash' else 'Картой'}\n"
+        f"💰 Цена: {price} сомони\n"
+        f"💬 {comment or 'Нет'}\n\n⚠️ Сначала завершите текущий заказ!"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Забронировать", callback_data=f"chain_accept:{order_id}")
+    kb.button(text="❌ Пропустить", callback_data=f"chain_skip:{order_id}")
+    kb.adjust(1)
+    try:
+        await bot.send_message(driver_id, text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+    except Exception:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE orders SET status='pending', booked_for_driver=NULL WHERE id=?", (order_id,))
+            await db.commit()
+
+async def monitor_subscriptions(bot: Bot):
+    """Каждые 6 часов: напоминает об истечении подписки"""
+    while True:
+        await asyncio.sleep(6 * 60 * 60)
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute(
+                    "SELECT user_id, sub_until FROM users WHERE role='driver' AND banned=0 AND sub_until IS NOT NULL"
+                )
+                drivers = await cur.fetchall()
+            now = datetime.now()
+            for driver_id, sub_until in drivers:
+                try:
+                    until = datetime.fromisoformat(sub_until)
+                except Exception:
+                    continue
+                days_left = (until - now).days
+                if days_left in (3, 2, 1):
+                    try:
+                        await bot.send_message(
+                            driver_id,
+                            f"⚠️ **Подписка истекает через {days_left} дн.**\n\nОплатите {SUB_PRICE} сомони.\n💳 `{CARD_NUMBER}`",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+                elif days_left == 0 and until <= now:
+                    try:
+                        await bot.send_message(driver_id, "❌ **Подписка истекла!**\n\nОплатите, чтобы работать.", parse_mode="Markdown")
+                        async with aiosqlite.connect(DB_PATH) as db2:
+                            await db2.execute("UPDATE users SET online=0 WHERE user_id=?", (driver_id,))
+                            await db2.commit()
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"monitor_subscriptions: {e}")
+
+async def monitor_idle_drivers(bot: Bot):
+    """Каждые 20 мин: напоминает «вы на линии»"""
+    while True:
+        await asyncio.sleep(20 * 60)
+        try:
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute("""
+                    SELECT u.user_id FROM users u
+                    WHERE u.role='driver' AND u.online=1 AND u.banned=0 AND u.approved=1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM orders o WHERE o.driver_id=u.user_id
+                            AND o.status IN ('accepted','arrived','started','booked')
+                      )
+                """)
+                idle = [r[0] for r in await cur.fetchall()]
+            for driver_id in idle:
+                try:
+                    await bot.send_message(
+                        driver_id,
+                        "🚕 Вы на линии. Пока новых заказов нет. Как только появятся — сразу пришлём! 📍",
+                        disable_notification=True
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.error(f"monitor_idle_drivers: {e}")
+
+# ==================== ХЕНДЛЕРЫ ====================
 
 @router.message(F.text.in_(["🇷🇺 Русский", "🇷🇺 Русский язык"]))
 async def set_lang_ru(message: Message, state: FSMContext):
@@ -1279,13 +1654,16 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     builder.button(text="❌ Отменить заказ", callback_data="client_cancel:" + str(order_id))
     pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
     eta = estimate_minutes(data["distance"])
+    
     if is_scheduled:
         sdt = datetime.fromisoformat(sched_at)
         await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n⏳ " + str(eta) + " мин\n\n🔍 Ищем водителя...")
-        data["client_id"] = call.from_user.id
-        await notify_drivers(call.bot, order_id, data)
+    else:
+        await call.message.edit_text("✅ Заказ #" + str(order_id) + " создан!\n\n💰 " + str(data["price"]) + " сомони\n💳 " + pay_text + "\n⏳ " + str(eta) + " мин\n\n🔍 Ищем водителя...")
+    
     await call.message.answer("Ожидайте:", reply_markup=builder.as_markup())
 
+    # === НОВАЯ ЛОГИКА РАССЫЛКИ ===
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT first_name, last_name, city, phone FROM users WHERE user_id=?", (call.from_user.id,))
         row = await cur.fetchone()
@@ -1295,75 +1673,14 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     phone = row[3] if row else "?"
     text_admin = "📦 Новый заказ #" + str(order_id) + "\n\n👤 " + (fname + " " + lname).strip() + "\n🏙️ " + city + "\n📱 " + str(phone) + "\n💰 " + str(data["price"]) + " сомони"
     await notify_admins(call.bot, text_admin)
+
+    # Запуск умной рассылки
+    search_msg = await call.bot.send_message(call.from_user.id, "⏳ Ищем водителя... Ожидайте.")
+    asyncio.create_task(update_client_waiting(call.bot, call.from_user.id, search_msg.message_id, order_id))
+    asyncio.create_task(rotate_order_to_next_driver(call.bot, order_id))
+    asyncio.create_task(notify_nearby_drivers(call.bot, order_id, data["from_lat"], data["from_lon"], city))
+    
     await call.answer()
-
-async def notify_drivers(bot: Bot, order_id: int, data: dict):
-    flat = data.get("from_lat")
-    flon = data.get("from_lon")
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT city FROM users WHERE user_id=?", (data.get("client_id", 0),))
-        row = await cur.fetchone()
-    if not row or not row[0]:
-        client_city = ""
-    else:
-        client_city = row[0]
-
-    if not client_city:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute("SELECT client_id FROM orders WHERE id=?", (order_id,))
-            crow = await cur.fetchone()
-        if crow:
-            async with aiosqlite.connect(DB_PATH) as db:
-                cur = await db.execute("SELECT city FROM users WHERE user_id=?", (crow[0],))
-                r2 = await cur.fetchone()
-            if r2:
-                client_city = r2[0]
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT user_id, driver_lat, driver_lon, city FROM users WHERE role='driver' AND online=1 AND approved=1 AND rejected=0 AND banned=0 AND city=?", (client_city,))
-        drivers = await cur.fetchall()
-
-    if not drivers:
-        return
-
-    near = []
-    far = []
-    for uid, dlat, dlon, dcity in drivers:
-        if dlat and dlon and flat and flon:
-            dist = haversine(dlat, dlon, flat, flon)
-            if dist <= NEAR_RADIUS:
-                near.append((uid, dist))
-            else:
-                far.append((uid, dist))
-        else:
-            far.append((uid, 999))
-    near.sort(key=lambda x: x[1])
-    far.sort(key=lambda x: x[1])
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Принять — " + str(data["price"]) + " сомони", callback_data="accept:" + str(order_id))
-    builder.button(text="💰 Предложить свою цену", callback_data="driver_offer:" + str(order_id))
-    builder.adjust(1)
-    pay_text = "💵 Наличные" if data.get("payment") == "cash" else "💳 Картой"
-    text = ("🔔 Новый заказ #" + str(order_id) + "\n\n"
-            "🚕 " + TARIFFS[data["tariff"]]["name"] + "\n"
-            "📏 ~" + str(round(data["distance"], 1)) + " км\n"
-            "💳 " + pay_text + "\n"
-            "💰 Клиент предлагает: " + str(data["price"]) + " сомони")
-    if data.get("comment"):
-        text += "\n💬 " + data["comment"]
-    for uid, _ in near:
-        try:
-            await bot.send_message(uid, text, reply_markup=builder.as_markup())
-        except Exception as e:
-            logging.warning("Error: " + str(e))
-    if near:
-        await asyncio.sleep(45)
-    for uid, _ in far:
-        try:
-            await bot.send_message(uid, text, reply_markup=builder.as_markup())
-        except Exception as e:
-            logging.warning("Error: " + str(e))
 
 @router.callback_query(F.data.startswith("driver_offer:"))
 async def driver_offer_start(call: CallbackQuery, state: FSMContext):
@@ -1511,6 +1828,12 @@ async def client_counter_save(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("accept:"))
 async def accept_order(call: CallbackQuery):
     order_id = int(call.data.split(":")[1])
+    
+    # Отменяем таймер
+    if order_id in active_offer_timers:
+        active_offer_timers[order_id].cancel()
+        del active_offer_timers[order_id]
+
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT status, client_id, price, from_lat, from_lon, to_lat, to_lon, payment, negotiation_round, last_offer_by, recommended_price FROM orders WHERE id=?", (order_id,))
         row = await cur.fetchone()
@@ -1567,6 +1890,14 @@ async def finalize_accept(bot: Bot, order_id: int, driver_id: int, client_id: in
         await bot.send_message(driver_id, "✅ Вы приняли заказ #" + str(order_id) + "\n\n💰 " + str(price) + " сомони\n💳 " + pay_text + "\n\n⏱️ До клиента: " + eta_driver_text + "\n⏳ Поездка: " + eta_ride_text + "\n\n👤 " + client_name + "\n🏙️ " + str(client_city) + "\n📱 Telegram: " + str(client_phone) + "\n📞 Звонок: " + str(client_call_phone) + comment_text)
     except Exception:
         pass
+        
+    # Отправка голосового сообщения "Пристегните ремень"
+    try:
+        lang_d = await get_lang(driver_id)
+        await send_seatbelt_voice(bot, driver_id, lang_d)
+    except Exception as e:
+        logging.warning(f"seatbelt voice: {e}")
+
     try:
         await bot.send_location(driver_id, latitude=flat, longitude=flon)
         await bot.send_message(driver_id, "🚕 Маршрут к клиенту (точка A):\n" + nav_link(dlat if dlat else flat, dlon if dlon else flon, flat, flon))
@@ -1856,58 +2187,7 @@ async def drv_location(message: Message, state: FSMContext):
     await log_action(uid, "driver_online")
     days = await days_left_subscription(uid)
     await message.answer("🟢 Вы на линии.\n⏳ Подписка: " + str(days) + " дн.", reply_markup=driver_menu(lang))
-    await send_pending_orders_to_driver(message.bot, uid)
-async def send_pending_orders_to_driver(bot: Bot, driver_id: int):
-    """Отправляет водителю все активные заказы в его городе."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT city FROM users WHERE user_id=?", (driver_id,))
-        row = await cur.fetchone()
-        if not row or not row[0]:
-            return
-        driver_city = row[0]
-
-        cur = await db.execute(
-            "SELECT id, from_lat, from_lon, to_lat, to_lon, distance, price, tariff, payment, comment, recommended_price, client_id "
-            "FROM orders WHERE status IN ('pending', 'scheduled') ORDER BY id DESC LIMIT 20"
-        )
-        orders = await cur.fetchall()
-
-    if not orders:
-        return
-
-    sent_count = 0
-    for (oid, flat, flon, tlat, tlon, dist, price, tariff, payment, comment, recommended, client_id) in orders:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute("SELECT city FROM users WHERE user_id=?", (client_id,))
-            crow = await cur.fetchone()
-        if not crow or crow[0] != driver_city:
-            continue
-
-        builder = InlineKeyboardBuilder()
-        builder.button(text="✅ Принять — " + str(price) + " сомони", callback_data="accept:" + str(oid))
-        builder.button(text="💰 Предложить свою цену", callback_data="driver_offer:" + str(oid))
-        builder.adjust(1)
-
-        pay_text = "💵 Наличные" if payment == "cash" else "💳 Картой"
-        text = ("🔔 Новый заказ #" + str(oid) + "\n\n"
-                "🚕 " + TARIFFS[tariff]["name"] + "\n"
-                "📏 ~" + str(round(dist, 1)) + " км\n"
-                "💳 " + pay_text + "\n"
-                "💰 Клиент предлагает: " + str(price) + " сомони")
-        if comment:
-            text += "\n💬 " + comment
-
-        try:
-            await bot.send_message(driver_id, text, reply_markup=builder.as_markup())
-            sent_count += 1
-        except Exception as e:
-            logging.warning("Error send pending order: " + str(e))
-
-    if sent_count > 0:
-        try:
-            await bot.send_message(driver_id, "📋 Вам отправлено " + str(sent_count) + " активных заказов в вашем городе.")
-        except Exception:
-            pass
+    # Старый вызов send_pending_orders_to_driver удален. Теперь заказы приходят по таймеру/ротации.
 
 @router.message(DriverReg.location)
 async def drv_location_wrong(message: Message):
@@ -1967,6 +2247,31 @@ async def driver_reject(call: CallbackQuery):
     except Exception:
         pass
     await call.answer("Отклонён")
+
+@router.callback_query(F.data.startswith("chain_accept:"))
+async def chain_accept(call: CallbackQuery):
+    order_id = int(call.data.split(":")[1])
+    driver_id = call.from_user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT status, booked_for_driver FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+        if not row or row[0] != 'booked' or row[1] != driver_id:
+            await call.answer("❌ Недоступен", show_alert=True)
+            return
+    await call.message.edit_text("✅ Вы забронировали следующий заказ!\n\nКак только завершите текущий — сразу к новому клиенту 🚕")
+    await call.answer()
+
+@router.callback_query(F.data.startswith("chain_skip:"))
+async def chain_skip(call: CallbackQuery):
+    order_id = int(call.data.split(":")[1])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE orders SET status='pending', booked_for_driver=NULL WHERE id=? AND status='booked'",
+            (order_id,)
+        )
+        await db.commit()
+    await call.message.edit_text("❌ Заказ пропущен. Вернулся в пул.")
+    await call.answer()
 
 @router.message(Command("admin"))
 async def admin_panel(message: Message, state: FSMContext):
@@ -2674,20 +2979,28 @@ async def client_cancel(call: CallbackQuery):
 async def finish_ride(call: CallbackQuery):
     order_id = int(call.data.split(":")[1])
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT client_id, driver_id, status FROM orders WHERE id=?", (order_id,))
+        cur = await db.execute("SELECT client_id, driver_id, status, to_lat, to_lon FROM orders WHERE id=?", (order_id,))
         row = await cur.fetchone()
         if not row:
             await call.answer("Не найден", show_alert=True)
             return
-        client_id, driver_id, status = row
+        client_id, driver_id, status, to_lat, to_lon = row
         if status not in ("accepted", "arrived", "started"):
             await call.answer("Уже завершён", show_alert=True)
             return
         await db.execute("UPDATE orders SET status='finished' WHERE id=?", (order_id,))
         await db.execute("UPDATE users SET rides=rides+1, total_rides=COALESCE(total_rides,0)+1 WHERE user_id=?", (driver_id,))
+        
+        # Сохраняем последнюю локацию
+        await db.execute(
+            "UPDATE users SET last_end_lat=?, last_end_lon=?, last_trip_end=? WHERE user_id=?",
+            (to_lat, to_lon, datetime.now().isoformat(), driver_id)
+        )
         await db.commit()
+    
     await log_action(driver_id, "finish_ride", "id=" + str(order_id))
     await call.message.edit_text("✅ Поездка завершена.")
+    
     builder = InlineKeyboardBuilder()
     for i in range(1, 6):
         builder.button(text="⭐" * i, callback_data="rate:" + str(order_id) + ":" + str(i))
@@ -2696,6 +3009,31 @@ async def finish_ride(call: CallbackQuery):
         await call.bot.send_message(client_id, "🏁 Поездка #" + str(order_id) + " завершена!\n\nОцените водителя:", reply_markup=builder.as_markup())
     except Exception:
         pass
+
+    # === НОВАЯ ЛОГИКА ДЛЯ ВОДИТЕЛЯ ===
+    # 1. Проверяем бронь следующего заказа
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT id FROM orders WHERE booked_for_driver=? AND status='booked'", (driver_id,))
+        next_order = await cur.fetchone()
+        if next_order:
+            next_id = next_order[0]
+            await db.execute("UPDATE orders SET status='accepted', driver_id=? WHERE id=?", (driver_id, next_id))
+            await db.commit()
+            try:
+                await call.bot.send_message(driver_id, f"🚕 **Текущая поездка завершена!**\n\nСледующий заказ #{next_id} активен. Езжайте к клиенту!")
+            except Exception:
+                pass
+        else:
+            # Запускаем поиск нового заказа через 10 минут
+            asyncio.create_task(find_next_order_for_driver(call.bot, driver_id, to_lat, to_lon))
+
+    # 2. Голосовое «Вы приехали»
+    try:
+        lang_d = await get_lang(driver_id)
+        await send_arrived_voice(call.bot, driver_id, lang_d)
+    except Exception as e:
+        logging.warning(f"arrived voice: {e}")
+
     await call.answer()
 
 @router.callback_query(F.data.startswith("rate:"))
@@ -3060,11 +3398,19 @@ async def my_car(message: Message, state: FSMContext):
 
 async def health(request):
     return web.Response(text="OK")
+
 async def main():
     await init_db()
+    await cleanup_old_orders()  # Очистка старых заказов при старте
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
+    
+    # Запускаем фоновые задачи
+    asyncio.create_task(monitor_active_trips(bot))
+    asyncio.create_task(monitor_subscriptions(bot))
+    asyncio.create_task(monitor_idle_drivers(bot))
+    
     print("Bot started")
     await dp.start_polling(bot)
 
