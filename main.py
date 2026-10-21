@@ -2938,9 +2938,47 @@ async def chat_start(call: CallbackQuery, state: FSMContext):
 
 @router.message(ChatMode.chatting, F.text == "❌ Выйти из чата")
 async def chat_exit(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("order_id")
     await state.clear()
     lang = await get_lang(message.from_user.id)
-    await message.answer("Чат закрыт.", reply_markup=main_menu(lang))
+
+    if not order_id:
+        await message.answer("Вы вышли из чата.", reply_markup=main_menu(lang))
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("SELECT client_id, driver_id, status FROM orders WHERE id=?", (order_id,))
+        row = await cur.fetchone()
+
+    if not row:
+        await message.answer("Заказ не найден.", reply_markup=main_menu(lang))
+        return
+
+    client_id, driver_id, status = row
+
+    if status in ("accepted", "arrived", "started"):
+        if message.from_user.id == driver_id:
+            dkb = InlineKeyboardBuilder()
+            dkb.button(text="🚗 Я выехал", callback_data="drv_status:on_way:" + str(order_id))
+            dkb.button(text="📍 Я рядом", callback_data="drv_status:near:" + str(order_id))
+            dkb.button(text="✅ Я приехал (взял клиента)", callback_data="drv_status:picked:" + str(order_id))
+            dkb.button(text="📡 Включить Live-локацию", callback_data="live_loc:" + str(order_id))
+            dkb.button(text="💬 Чат с клиентом", callback_data="chat_start:" + str(order_id))
+            dkb.button(text="✅ Завершить поездку", callback_data="finish:" + str(order_id))
+            dkb.adjust(1)
+            await message.answer("💬 Чат закрыт. Управление заказом:", reply_markup=dkb.as_markup())
+            return
+            
+        if message.from_user.id == client_id:
+            ckb = InlineKeyboardBuilder()
+            ckb.button(text="💬 Чат с водителем", callback_data="chat_start:" + str(order_id))
+            ckb.button(text="📍 Где водитель", callback_data="where_driver:" + str(order_id))
+            ckb.adjust(1)
+            await message.answer("💬 Чат закрыт. Управление заказом:", reply_markup=ckb.as_markup())
+            return
+
+    await message.answer("💬 Чат закрыт. Заказ завершён.", reply_markup=main_menu(lang))
 
 @router.message(ChatMode.chatting, F.location)
 async def chat_location(message: Message, state: FSMContext):
